@@ -13,221 +13,107 @@ function ChainBadge({ label }: { label: string }) {
   );
 }
 
-// Orbiting chains around a core node
-function Orbit({
-  radius = 140,
-  duration = 18,
-  reverse = false,
-  items = [],
+// Horizontal sliding row of chain logos
+function SlidingRow({
+  items,
+  direction = "left",
+  duration = 20,
+  gap = 80,
 }: {
-  radius?: number;
+  items: Array<{ src: string; alt: string }>;
+  direction?: "left" | "right";
   duration?: number;
-  reverse?: boolean;
-  // Accept strings (fallback to text badge) or logo objects { src, alt }
-  items: Array<string | { src: string; alt: string }>;
+  gap?: number;
 }) {
-  // Precompute equally spaced angles for items
-  const angles = useMemo(() => {
-    return items.map((_, i) => (i / items.length) * Math.PI * 2);
-  }, [items.length]);
+  // Duplicate items for seamless loop
+  const duplicatedItems = [...items, ...items];
+  const itemWidth = 60; // width of each logo container
+  const totalWidth = items.length * (itemWidth + gap);
 
   return (
-    <div
-      className="pointer-events-none absolute inset-0 m-auto"
-      style={{ width: radius * 2, height: radius * 2 }}
-    >
-      {/* Orbit ring */}
-      <div className="absolute inset-0 rounded-full border border-black/20" />
-      {/* Rotating container */}
-      <div className="absolute inset-0">
-        <motion.div
-          style={{ width: "100%", height: "100%", transformOrigin: "50% 50%" }}
-          animate={{ rotate: reverse ? -360 : 360 }}
-          transition={{ repeat: Infinity, ease: "linear", duration }}
-        >
-        {angles.map((a, idx) => {
-          const item = items[idx];
-          const isLogo = typeof item !== "string" && item && "src" in item;
-          const size = isLogo ? 40 : 56; // width for positioning; height ~ size for icons
-          const halfW = size / 2;
-          const halfH = isLogo ? 20 : 14;
-          return (
-            <div
-              key={idx}
-              className="absolute"
-              style={{
-                left: radius + Math.cos(a) * radius - halfW,
-                top: radius + Math.sin(a) * radius - halfH,
-              }}
-            >
-              <motion.div
-                style={{ transformOrigin: "50% 50%" }}
-                animate={{ rotate: reverse ? 360 : -360 }}
-                transition={{ repeat: Infinity, ease: "linear", duration }}
-              >
-                {isLogo ? (
-                  <div className="size-10 rounded-full border border-black/30 bg-black/5 backdrop-blur flex items-center justify-center shadow-sm">
-                    <img
-                      src={(item as { src: string; alt: string }).src}
-                      alt={(item as { src: string; alt: string }).alt}
-                      className="w-6 h-6 object-contain"
-                      draggable={false}
-                    />
-                  </div>
-                ) : (
-                  <ChainBadge label={item as string} />
-                )}
-              </motion.div>
+    <div className="relative overflow-hidden w-full h-16">
+      <motion.div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: gap,
+          position: "absolute",
+          width: totalWidth * 2,
+        }}
+        animate={{
+          x: direction === "left" ? [-totalWidth, 0] : [0, -totalWidth],
+        }}
+        transition={{
+          repeat: Infinity,
+          ease: "linear",
+          duration,
+        }}
+      >
+        {duplicatedItems.map((item, idx) => (
+          <div
+            key={idx}
+            className="flex-shrink-0 flex items-center justify-center"
+            style={{ width: itemWidth }}
+          >
+            <div className="size-14 rounded-full border border-black/20 bg-black/5 backdrop-blur flex items-center justify-center shadow-sm">
+              <img
+                src={item.src}
+                alt={item.alt}
+                className="w-8 h-8 object-contain"
+                draggable={false}
+              />
             </div>
-          );
-        })}
-        </motion.div>
-      </div>
+          </div>
+        ))}
+      </motion.div>
     </div>
   );
 }
 
-function Constellation() {
-  // Detect small screens to simplify the number of rings
-  const [isSmall, setIsSmall] = useState(false);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const coreRef = useRef<HTMLDivElement | null>(null);
-  const [rayCenter, setRayCenter] = useState<{ x: number; y: number }>({ x: 50, y: 50 });
-  useEffect(() => {
-    const mql = window.matchMedia("(max-width: 640px)");
-    const update = () => setIsSmall(mql.matches);
-    update();
-    mql.addEventListener("change", update);
-    return () => mql.removeEventListener("change", update);
-  }, []);
+function ChainSlides() {
+  const chains = [
+    { src: "/base.png", alt: "Base" },
+    { src: "/arbitrum.svg", alt: "Arbitrum" },
+    { src: "/optimism.svg", alt: "Optimism" },
+    { src: "/polygon.svg", alt: "Polygon" },
+    { src: "/ethereum.svg", alt: "Ethereum" },
+    { src: "/polkadot.svg", alt: "Polkadot" },
+    { src: "/bsc.svg", alt: "BSC" },
+    { src: "/avax.png", alt: "Avalanche" },
+    { src: "/hype.png", alt: "Hyperbridge" },
+    { src: "/solana.png", alt: "Solana" },
+    { src: "/tron-trx-logo.png", alt: "Tron" },
+    { src: "/gnosis.jpg", alt: "Gnosis" },
+    { src: "/sonic.png", alt: "Sonic" },
+    { src: "/story.png", alt: "Story" },
+    { src: "/monad.png", alt: "Monad" },
+  ];
 
-  // Align rays to actual center of the core node (accounts for layout/scale differences)
-  useEffect(() => {
-    const computeCenter = () => {
-      const container = containerRef.current;
-      const core = coreRef.current;
-      if (!container || !core) return;
-      const cb = container.getBoundingClientRect();
-      const kb = core.getBoundingClientRect();
-      const coreCx = kb.left + kb.width / 2;
-      const coreCy = kb.top + kb.height / 2;
-      // Map pixels to SVG viewBox (0..100) with preserveAspectRatio="xMidYMid meet"
-      const scale = Math.min(cb.width / 100, cb.height / 100);
-      const offsetX = (cb.width - 100 * scale) / 2;
-      const offsetY = (cb.height - 100 * scale) / 2;
-      const viewX = (coreCx - cb.left - offsetX) / scale;
-      const viewY = (coreCy - cb.top - offsetY) / scale;
-      if (Number.isFinite(viewX) && Number.isFinite(viewY)) {
-        // Only nudge upward on larger screens (md and up)
-        const isLargeScreen = window.innerWidth >= 768; // md breakpoint
-        const verticalNudge = isLargeScreen ? -15 : 0;
-        setRayCenter({
-          x: Math.max(0, Math.min(100, viewX)),
-          y: Math.max(0, Math.min(100, viewY + verticalNudge)),
-        });
-      }
-    };
-    computeCenter();
-    const ro = new ResizeObserver(computeCenter);
-    if (containerRef.current) ro.observe(containerRef.current);
-    window.addEventListener("resize", computeCenter);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener("resize", computeCenter);
-    };
-  }, []);
   return (
-    <div ref={containerRef} className="relative w-full aspect-square sm:aspect-[3/2] max-w-[90vw] sm:max-w-4xl mx-auto origin-center scale-100 sm:scale-[0.9] md:scale-100">
-      {/* Glow */}
-      <div className="absolute inset-0 blur-3xl bg-[radial-gradient(circle_at_center,rgba(0,0,0,0.05),transparent_60%)]" />
-
-      {/* Core node */}
-      <div ref={coreRef} className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
-        <div className="relative">
-          <div className="size-32 sm:size-40 rounded-full bg-black/10 border border-black/30 backdrop-blur flex items-center justify-center shadow-2xl overflow-hidden">
-            <img src="/RailBridge-Logo.png" alt="RailBridge AI" className="w-20 h-20 sm:w-28 sm:h-28 object-contain rounded-xl" draggable={false} />
-          </div>
-          {/* Pulse */}
-          <div className="absolute inset-0 rounded-full border border-black/30 animate-ping" />
-        </div>
+    <div className="relative w-full max-w-5xl mx-auto py-12">
+      {/* Sliding rows */}
+      <div className="relative space-y-8">
+        {/* Row 1 - Left */}
+        <SlidingRow
+          items={chains.slice(0, 5)}
+          direction="left"
+          duration={25}
+        />
+        
+        {/* Row 2 - Right */}
+        <SlidingRow
+          items={chains.slice(5, 10)}
+          direction="right"
+          duration={30}
+        />
+        
+        {/* Row 3 - Left (faster) */}
+        <SlidingRow
+          items={chains.slice(10, 15)}
+          direction="left"
+          duration={20}
+        />
       </div>
-
-      {/* Orbits */}
-      {isSmall ? (
-        <>
-          <Orbit
-            radius={95}
-            duration={30}
-            items={[
-              { src: "/base.png", alt: "Base" },
-              { src: "/arbitrum.svg", alt: "Arbitrum" },
-              { src: "/optimism.svg", alt: "Optimism" },
-              { src: "/polygon.svg", alt: "Polygon"}
-            ]}
-          />
-          <Orbit
-            radius={150}
-            duration={44}
-            reverse
-            items={[
-              { src: "/ethereum.svg", alt: "Ethereum" },
-              { src: "/polkadot.svg", alt: "Polkadot" },
-              { src: "/bsc.svg", alt: "BSC" },
-            ]}
-          />
-        </>
-      ) : (
-        <>
-          <Orbit
-            radius={110}
-            duration={28}
-            items={[
-              { src: "/base.png", alt: "Base" },
-              { src: "/arbitrum.svg", alt: "Arbitrum" },
-              { src: "/optimism.svg", alt: "Optimism" },
-            ]}
-          />
-          <Orbit
-            radius={170}
-            duration={40}
-            reverse
-            items={[
-              { src: "/ethereum.svg", alt: "Ethereum" },
-              { src: "/polkadot.svg", alt: "Polkadot" },
-              { src: "/bsc.svg", alt: "BSC" },
-            ]}
-          />
-          <Orbit radius={230} duration={56} items={[{ src: "/polygon.svg", alt: "Polygon" }]} />
-        </>
-      )}
-
-      {/* Connection rays - dynamically centered to the core logo */}
-      <svg className="absolute inset-0" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet">
-        <defs>
-          <linearGradient id="ray" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="rgba(0,0,0,0.0)" />
-            <stop offset="50%" stopColor="rgba(0,0,0,0.15)" />
-            <stop offset="100%" stopColor="rgba(0,0,0,0.0)" />
-          </linearGradient>
-        </defs>
-        {[...Array(24)].map((_, i) => {
-          const angle = (i / 24) * Math.PI * 2;
-          const radius = 45; // normalized radius
-          const cx = rayCenter.x;
-          const cy = rayCenter.y;
-          return (
-            <line
-              key={i}
-              x1={cx}
-              y1={cy}
-              x2={cx + Math.cos(angle) * radius}
-              y2={cy + Math.sin(angle) * radius}
-              stroke="url(#ray)"
-              strokeWidth="0.25"
-            />
-          );
-        })}
-      </svg>
     </div>
   );
 }
@@ -299,7 +185,7 @@ export default function Page() {
             </div>
 
             <div className="flex justify-center mt-8 sm:mt-0">
-              <Constellation />
+              <ChainSlides />
             </div>
           </div>
         </div>
@@ -390,7 +276,7 @@ export default function Page() {
       {/* Ecosystem */}
       <Section id="ecosystem" title="Ecosystem & Integrations" subtitle="Designed to work alongside x402 + your favorite chains and bridges.">
         <div className="flex flex-wrap gap-3 text-xs text-black/80">
-          {["x402","Polkadot","Hyperbridge","Base","Arbitrum","Optimism","Ethereum","Polygon","Solana","BSC","Avalanche"].map((e, i) => (
+          {["x402","Polkadot","Hyperbridge","Base","Arbitrum","Optimism","Ethereum","Polygon","Solana","BSC","Avalanche","Tron","Gnosis","Sonic","Story","Monad"].map((e, i) => (
             <ChainBadge key={i} label={e} />
           ))}
         </div>
