@@ -5,9 +5,13 @@ import { motion } from "framer-motion";
 import "./globals.css";
 
 // Simple Chain Badge (text-based so you can swap easily)
-function ChainBadge({ label }: { label: string }) {
+function ChainBadge({ label, darkMode }: { label: string; darkMode: boolean }) {
   return (
-    <div className="px-3 py-1 rounded-full border border-black/30 bg-black/5 backdrop-blur text-xs text-black/90 shadow-sm">
+    <div className={`px-3 py-1 rounded-full backdrop-blur text-xs shadow-sm ${
+      darkMode 
+        ? "border border-white/30 bg-white/5 text-white/90" 
+        : "border border-black/30 bg-black/5 text-black/90"
+    }`}>
       {label}
     </div>
   );
@@ -19,11 +23,13 @@ function SlidingRow({
   direction = "left",
   duration = 20,
   gap = 80,
+  darkMode = false,
 }: {
   items: Array<{ src: string; alt: string }>;
   direction?: "left" | "right";
   duration?: number;
   gap?: number;
+  darkMode?: boolean;
 }) {
   // Duplicate items for seamless loop
   const duplicatedItems = [...items, ...items];
@@ -55,7 +61,11 @@ function SlidingRow({
             className="flex-shrink-0 flex items-center justify-center"
             style={{ width: itemWidth }}
           >
-            <div className="size-14 rounded-full border border-black/20 bg-black/5 backdrop-blur flex items-center justify-center shadow-sm">
+            <div className={`size-14 rounded-full backdrop-blur flex items-center justify-center shadow-sm ${
+              darkMode 
+                ? "border border-white/20 bg-white/5" 
+                : "border border-black/20 bg-black/5"
+            }`}>
               <img
                 src={item.src}
                 alt={item.alt}
@@ -70,7 +80,7 @@ function SlidingRow({
   );
 }
 
-function ChainSlides() {
+function ChainSlides({ darkMode }: { darkMode: boolean }) {
   const chains = [
     { src: "/base.png", alt: "Base" },
     { src: "/arbitrum.svg", alt: "Arbitrum" },
@@ -98,6 +108,7 @@ function ChainSlides() {
           items={chains.slice(0, 5)}
           direction="left"
           duration={25}
+          darkMode={darkMode}
         />
         
         {/* Row 2 - Right */}
@@ -105,6 +116,7 @@ function ChainSlides() {
           items={chains.slice(5, 10)}
           direction="right"
           duration={30}
+          darkMode={darkMode}
         />
         
         {/* Row 3 - Left (faster) */}
@@ -112,20 +124,25 @@ function ChainSlides() {
           items={chains.slice(10, 15)}
           direction="left"
           duration={20}
+          darkMode={darkMode}
         />
       </div>
     </div>
   );
 }
 
-function Section({ id, title, subtitle, children }: any) {
+function Section({ id, title, subtitle, children, darkMode }: any) {
   return (
     <section id={id} className="relative py-20 sm:py-28">
       <div className="max-w-6xl mx-auto px-6">
         <div className="mb-8">
-          <h2 className="text-2xl sm:text-3xl md:text-4xl font-semibold text-black">{title}</h2>
+          <h2 className={`text-2xl sm:text-3xl md:text-4xl font-semibold ${
+            darkMode ? "text-white" : "text-black"
+          }`}>{title}</h2>
           {subtitle && (
-            <p className="mt-3 text-black/70 max-w-3xl">{subtitle}</p>
+            <p className={`mt-3 max-w-3xl ${
+              darkMode ? "text-white/70" : "text-black/70"
+            }`}>{subtitle}</p>
           )}
         </div>
         {children}
@@ -135,57 +152,149 @@ function Section({ id, title, subtitle, children }: any) {
 }
 
 export default function Page() {
+  const [darkMode, setDarkMode] = useState(false);
+
   useEffect(() => {
-    document.body.classList.add("bg-white");
-    return () => document.body.classList.remove("bg-white");
-  }, []);
+    if (darkMode) {
+      document.body.classList.remove("bg-white");
+      document.body.classList.add("bg-black");
+    } else {
+      document.body.classList.remove("bg-black");
+      document.body.classList.add("bg-white");
+    }
+    return () => {
+      document.body.classList.remove("bg-white", "bg-black");
+    };
+  }, [darkMode]);
 
   return (
-    <div className="min-h-screen text-black selection:bg-black/20 selection:text-black">
+    <div className={`min-h-screen transition-colors ${
+      darkMode 
+        ? "text-white selection:bg-white/20 selection:text-white" 
+        : "text-black selection:bg-black/20 selection:text-black"
+    }`}>
       {/* Header */}
-      <header className="sticky top-0 z-40 border-b border-black/20 backdrop-blur bg-white/80">
+      <header className={`sticky top-0 z-40 border-b backdrop-blur transition-colors ${
+        darkMode 
+          ? "border-white/20 bg-black/80" 
+          : "border-black/20 bg-white/80"
+      }`}>
         <div className="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <img src="/RailBridge-Logo.png" alt="RailBridge AI" className="w-10 h-10 rounded-sm object-contain" draggable={false} />
             <span className="font-bold tracking-tight">RailBridge AI</span>
           </div>
-          <nav className="hidden sm:flex items-center gap-6 text-sm text-black/70">
-            <a href="#problem" className="hover:text-black">Problem</a>
-            <a href="#solution" className="hover:text-black">Solution</a>
-            <a href="#how" className="hover:text-black">How it Works</a>
-            <a href="#ecosystem" className="hover:text-black">Ecosystem</a>
-            <a href="#docs" className="px-3 py-1.5 rounded-md bg-black/10 border border-black/30 hover:bg-black/20 text-black">Docs</a>
-          </nav>
+          <div className="flex items-center gap-3">
+            <nav className={`hidden sm:flex items-center gap-6 text-sm ${
+              darkMode ? "text-white/70" : "text-black/70"
+            }`}>
+              <a href="#problem" className={darkMode ? "hover:text-white" : "hover:text-black"}>Problem</a>
+              <a href="#solution" className={darkMode ? "hover:text-white" : "hover:text-black"}>Solution</a>
+              <a href="#how" className={darkMode ? "hover:text-white" : "hover:text-black"}>How it Works</a>
+              <a href="#ecosystem" className={darkMode ? "hover:text-white" : "hover:text-black"}>Ecosystem</a>
+              <a href="#docs" className={`px-3 py-1.5 rounded-md border transition-colors ${
+                darkMode 
+                  ? "bg-white/10 border-white/30 hover:bg-white/20 text-white" 
+                  : "bg-black/10 border-black/30 hover:bg-black/20 text-black"
+              }`}>Docs</a>
+            </nav>
+            <button
+              onClick={() => setDarkMode(!darkMode)}
+              className={`relative inline-flex h-7 w-14 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 ${
+                darkMode 
+                  ? "bg-gray-800 focus:ring-white/50" 
+                  : "bg-gray-200 focus:ring-black/50"
+              }`}
+              aria-label="Toggle dark mode"
+              role="switch"
+              aria-checked={darkMode}
+            >
+              {/* Moon icon - visible in dark mode */}
+              <svg
+                className={`absolute left-1.5 h-4 w-4 transition-opacity ${
+                  darkMode ? "opacity-100 text-white" : "opacity-0"
+                }`}
+                fill="currentColor"
+                viewBox="0 0 20 20"
+              >
+                <path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z" />
+              </svg>
+              
+              {/* Sun icon - visible in light mode */}
+              <svg
+                className={`absolute right-1.5 h-4 w-4 transition-opacity ${
+                  darkMode ? "opacity-0" : "opacity-100 text-gray-800"
+                }`}
+                fill="currentColor"
+                viewBox="0 0 20 20"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z"
+                  clipRule="evenodd"
+                />
+              </svg>
+              
+              {/* Thumb */}
+              <span
+                className={`inline-block h-5 w-5 transform rounded-full transition-transform shadow-md ${
+                  darkMode 
+                    ? "translate-x-8 bg-white" 
+                    : "translate-x-1 bg-white"
+                }`}
+              />
+            </button>
+          </div>
         </div>
       </header>
 
       {/* Hero */}
       <section className="relative overflow-hidden min-h-[600px] sm:min-h-[650px]">
         {/* Background gradient */}
-        <div className="absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top,rgba(0,0,0,0.03),transparent_40%),radial-gradient(ellipse_at_bottom,rgba(0,0,0,0.02),transparent_45%)]" />
+        <div className={`absolute inset-0 -z-10 transition-colors ${
+          darkMode 
+            ? "bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.03),transparent_40%),radial-gradient(ellipse_at_bottom,rgba(255,255,255,0.02),transparent_45%)]" 
+            : "bg-[radial-gradient(ellipse_at_top,rgba(0,0,0,0.03),transparent_40%),radial-gradient(ellipse_at_bottom,rgba(0,0,0,0.02),transparent_45%)]"
+        }`} />
 
         <div className="max-w-6xl mx-auto px-6 pt-16 pb-28 sm:pt-24 sm:pb-36 md:pb-32">
           <div className="grid md:grid-cols-2 gap-10 items-center">
             <div>
-              <div className="inline-flex items-center gap-2 text-xs px-2 py-1 rounded-full border border-black/30 bg-black/5 mb-4">
-                <span className="size-1.5 rounded-full bg-black" />
+              <div className={`inline-flex items-center gap-2 text-xs px-2 py-1 rounded-full border mb-4 transition-colors ${
+                darkMode 
+                  ? "border-white/30 bg-white/5" 
+                  : "border-black/30 bg-black/5"
+              }`}>
+                <span className={`size-1.5 rounded-full transition-colors ${
+                  darkMode ? "bg-white" : "bg-black"
+                }`} />
                 Interoperability for x402
               </div>
               <h1 className="text-3xl sm:text-5xl md:text-6xl font-semibold leading-tight">
-                The <span className="text-black">Interoperability</span> Layer for x402
+                The <span className={darkMode ? "text-white" : "text-black"}>Interoperability</span> Layer for x402
               </h1>
-              <p className="mt-5 text-black/70 max-w-xl">
+              <p className={`mt-5 max-w-xl transition-colors ${
+                darkMode ? "text-white/70" : "text-black/70"
+              }`}>
                 Enable truly cross-chain micropayments so users and agents can pay with any token, on any chain,
                 while services receive seamlessly where they are.
               </p>
               <div className="mt-7 flex flex-wrap gap-3">
-                <a href="#docs" className="px-4 py-2.5 rounded-xl bg-black hover:bg-black/90 text-white font-medium">Read Whitepaper</a>
-                <a href="#join" className="px-4 py-2.5 rounded-xl border border-black/30 hover:bg-black/10">Join Testnet</a>
+                <a href="#docs" className={`px-4 py-2.5 rounded-xl font-medium transition-colors ${
+                  darkMode 
+                    ? "bg-white hover:bg-white/90 text-black" 
+                    : "bg-black hover:bg-black/90 text-white"
+                }`}>Read Whitepaper</a>
+                <a href="#join" className={`px-4 py-2.5 rounded-xl border transition-colors ${
+                  darkMode 
+                    ? "border-white/30 hover:bg-white/10" 
+                    : "border-black/30 hover:bg-black/10"
+                }`}>Join Testnet</a>
               </div>
             </div>
 
             <div className="flex justify-center mt-8 sm:mt-0">
-              <ChainSlides />
+              <ChainSlides darkMode={darkMode} />
             </div>
           </div>
         </div>
@@ -196,6 +305,7 @@ export default function Page() {
         id="problem"
         title="The Multi‑Chain Payment Problem"
         subtitle="Payments are siloed within single chains. Even with x402 enabling agentic micropayments, there is no seamless, trustless way to pay on one chain and settle on another."
+        darkMode={darkMode}
       >
         <div className="grid md:grid-cols-3 gap-6">
           {[{
@@ -208,9 +318,17 @@ export default function Page() {
             h: "Stalled Agentic UX",
             p: "AI agents can initiate payments, but not seamlessly across networks; cross‑chain subscriptions and pay‑per‑use remain clunky.",
           }].map((card, i) => (
-            <div key={i} className="rounded-2xl border border-black/20 bg-black/[0.02] p-5">
-              <h3 className="text-lg font-medium text-black">{card.h}</h3>
-              <p className="mt-2 text-sm text-black/70">{card.p}</p>
+            <div key={i} className={`rounded-2xl border p-5 transition-colors ${
+              darkMode 
+                ? "border-white/20 bg-white/[0.02]" 
+                : "border-black/20 bg-black/[0.02]"
+            }`}>
+              <h3 className={`text-lg font-medium transition-colors ${
+                darkMode ? "text-white" : "text-black"
+              }`}>{card.h}</h3>
+              <p className={`mt-2 text-sm transition-colors ${
+                darkMode ? "text-white/70" : "text-black/70"
+              }`}>{card.p}</p>
             </div>
           ))}
         </div>
@@ -221,18 +339,31 @@ export default function Page() {
         id="solution"
         title="RailBridge AI Bridges Every Chain"
         subtitle="A non‑custodial, programmable routing layer on top of x402 that handles cross‑chain conversion and settlement."
+        darkMode={darkMode}
       >
         <div className="grid md:grid-cols-2 gap-6 items-center">
-          <div className="rounded-2xl border border-black/20 bg-gradient-to-br from-black/[0.04] to-black/[0.01] p-6">
-            <ul className="space-y-3 text-black/80 text-sm">
+          <div className={`rounded-2xl border p-6 transition-colors ${
+            darkMode 
+              ? "border-white/20 bg-gradient-to-br from-white/[0.04] to-white/[0.01]" 
+              : "border-black/20 bg-gradient-to-br from-black/[0.04] to-black/[0.01]"
+          }`}>
+            <ul className={`space-y-3 text-sm transition-colors ${
+              darkMode ? "text-white/80" : "text-black/80"
+            }`}>
               <li>• Pay on Chain A, receive on Chain B — automatically.</li>
               <li>• Route stablecoin flows across ecosystems without custodial bridges.</li>
               <li>• Programmable hooks for agents (refunds, metering, usage‑based caps).</li>
               <li>• Works with x402 flows; we add the cross‑chain plumbing.</li>
             </ul>
           </div>
-          <div className="rounded-2xl border border-black/20 bg-black/[0.02] p-6">
-            <ol className="list-decimal list-inside text-sm text-black/80 space-y-2">
+          <div className={`rounded-2xl border p-6 transition-colors ${
+            darkMode 
+              ? "border-white/20 bg-white/[0.02]" 
+              : "border-black/20 bg-black/[0.02]"
+          }`}>
+            <ol className={`list-decimal list-inside text-sm space-y-2 transition-colors ${
+              darkMode ? "text-white/80" : "text-black/80"
+            }`}>
               <li>Sender (user/agent) attaches payment via x402 on Chain A.</li>
               <li>RailBridge AI Router performs trust‑minimized cross‑chain route.</li>
               <li>Service receives on its preferred chain; receipts emitted for audit.</li>
@@ -242,7 +373,7 @@ export default function Page() {
       </Section>
 
       {/* How it works */}
-      <Section id="how" title="How It Works">
+      <Section id="how" title="How It Works" darkMode={darkMode}>
         <div className="grid md:grid-cols-3 gap-6">
           {[{
             h: "Send",
@@ -254,19 +385,31 @@ export default function Page() {
             h: "Settle",
             p: "Funds land on the destination chain; service unlocks resource.",
           }].map((s, i) => (
-            <div key={i} className="rounded-2xl border border-black/20 bg-black/[0.02] p-5">
-              <h3 className="text-lg font-medium text-black">{s.h}</h3>
-              <p className="mt-2 text-sm text-black/70">{s.p}</p>
+            <div key={i} className={`rounded-2xl border p-5 transition-colors ${
+              darkMode 
+                ? "border-white/20 bg-white/[0.02]" 
+                : "border-black/20 bg-black/[0.02]"
+            }`}>
+              <h3 className={`text-lg font-medium transition-colors ${
+                darkMode ? "text-white" : "text-black"
+              }`}>{s.h}</h3>
+              <p className={`mt-2 text-sm transition-colors ${
+                darkMode ? "text-white/70" : "text-black/70"
+              }`}>{s.p}</p>
             </div>
           ))}
         </div>
       </Section>
 
       {/* Use cases */}
-      <Section id="usecases" title="Use Cases">
+      <Section id="usecases" title="Use Cases" darkMode={darkMode}>
         <div className="grid md:grid-cols-3 gap-6">
           {["AI agents paying compute & data APIs","Cross‑chain SaaS subscriptions","Pay‑per‑call web services","Usage‑metered dApps","Multi‑chain marketplaces","Programmatic refunds & credits"].map((u, i) => (
-            <div key={i} className="rounded-2xl border border-black/20 bg-black/[0.02] p-5 text-sm text-black/80">
+            <div key={i} className={`rounded-2xl border p-5 text-sm transition-colors ${
+              darkMode 
+                ? "border-white/20 bg-white/[0.02] text-white/80" 
+                : "border-black/20 bg-black/[0.02] text-black/80"
+            }`}>
               • {u}
             </div>
           ))}
@@ -274,23 +417,37 @@ export default function Page() {
       </Section>
 
       {/* Ecosystem */}
-      <Section id="ecosystem" title="Ecosystem & Integrations" subtitle="Designed to work alongside x402 + your favorite chains and bridges.">
-        <div className="flex flex-wrap gap-3 text-xs text-black/80">
+      <Section id="ecosystem" title="Ecosystem & Integrations" subtitle="Designed to work alongside x402 + your favorite chains and bridges." darkMode={darkMode}>
+        <div className={`flex flex-wrap gap-3 text-xs transition-colors ${
+          darkMode ? "text-white/80" : "text-black/80"
+        }`}>
           {["x402","Polkadot","Hyperbridge","Base","Arbitrum","Optimism","Ethereum","Polygon","Solana","BSC","Avalanche","Tron","Gnosis","Sonic","Story","Monad"].map((e, i) => (
-            <ChainBadge key={i} label={e} />
+            <ChainBadge key={i} label={e} darkMode={darkMode} />
           ))}
         </div>
       </Section>
 
       {/* CTA */}
-      <Section id="join" title="Build with RailBridge AI" subtitle="Join the early builder cohort and help shape the cross‑chain agentic economy.">
+      <Section id="join" title="Build with RailBridge AI" subtitle="Join the early builder cohort and help shape the cross‑chain agentic economy." darkMode={darkMode}>
         <div className="flex flex-wrap gap-3">
-          <a href="#docs" className="px-4 py-2.5 rounded-xl bg-black hover:bg-black/90 text-white font-medium">Get Started</a>
-          <a href="#contact" className="px-4 py-2.5 rounded-xl border border-black/30 hover:bg-black/10">Contact Team</a>
+          <a href="#docs" className={`px-4 py-2.5 rounded-xl font-medium transition-colors ${
+            darkMode 
+              ? "bg-white hover:bg-white/90 text-black" 
+              : "bg-black hover:bg-black/90 text-white"
+          }`}>Get Started</a>
+          <a href="#contact" className={`px-4 py-2.5 rounded-xl border transition-colors ${
+            darkMode 
+              ? "border-white/30 hover:bg-white/10" 
+              : "border-black/30 hover:bg-black/10"
+          }`}>Contact Team</a>
         </div>
       </Section>
 
-      <footer className="py-10 border-t border-black/20 text-center text-xs text-black/60">
+      <footer className={`py-10 border-t text-center text-xs transition-colors ${
+        darkMode 
+          ? "border-white/20 text-white/60" 
+          : "border-black/20 text-black/60"
+      }`}>
         © {new Date().getFullYear()} RailBridge AI. Built for the agentic internet.
       </footer>
     </div>
