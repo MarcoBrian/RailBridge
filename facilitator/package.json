@@ -1,0 +1,44 @@
+{
+  "name": "railbridge-facilitator",
+  "version": "1.0.0",
+  "description": "Cross-chain x402 payment facilitator for RailBridge",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "@x402/core": "^2.1.0",
+    "@x402/evm": "^2.1.0",
+    "@x402/express": "^2.1.0",
+    "@x402/svm": "^2.1.0",
+    "@scure/base": "^1.2.6",
+    "@solana/kit": "^2.1.1",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "viem": "^2.39.3"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.1",
+    "@typescript-eslint/eslint-plugin": "^8.29.1",
+    "@typescript-eslint/parser": "^8.29.1",
+    "eslint": "^9.24.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  },
+  "keywords": [
+    "x402",
+    "payment",
+    "cross-chain",
+    "facilitator",
+    "railbridge"
+  ],
+  "author": "",
+  "license": "MIT"
+}
+
