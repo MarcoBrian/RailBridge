@@ -296,7 +296,7 @@ facilitator/
 │   ├── index.ts              # Main facilitator server (EVM + cross-chain)
 │   ├── merchant-server.ts    # Example merchant Express server
 │   ├── schemes/
-│   │   └── crossChainScheme.ts  # Cross-chain scheme implementation (EVM→EVM)
+│   │   └── crossChainRouter.ts  # Cross-chain routing wrapper (delegates to ExactEvmScheme)
 │   ├── services/
 │   │   └── bridgeService.ts     # Bridge service (stub)
 │   └── types/

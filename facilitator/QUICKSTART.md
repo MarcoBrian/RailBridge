@@ -1,82 +1,112 @@
-# Quick Start Guide
+# Quick Start - Testing on Base Sepolia
 
-## 1. Install Dependencies
+## 🚀 5-Minute Setup
+
+### 1. Get Testnet Tokens
+
+**Base Sepolia ETH** (for gas):
+- https://www.coinbase.com/faucets/base-ethereum-goerli-faucet
+- Or: https://faucet.quicknode.com/base/sepolia
+
+**Base Sepolia USDC** (for payments):
+- Contract: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
+- You may need to mint or get from a testnet faucet
+
+### 2. Set Up Environment
 
 ```bash
 cd facilitator
-npm install
-```
-
-## 2. Set Up Environment
-
-```bash
-# Copy the template
 cp env.template .env
-
-# Edit .env and add your keys:
-# - EVM_PRIVATE_KEY: Your EVM wallet private key (0x...)
-# - SVM_PRIVATE_KEY: Your Solana wallet private key (base58)
-# - RPC URLs: Your preferred RPC endpoints
 ```
 
-## 3. Generate Test Keys (Optional)
+Edit `.env`:
+```env
+# Use Base Sepolia testnet
+EVM_PRIVATE_KEY=0xYourPrivateKeyHere
+EVM_RPC_URL=https://sepolia.base.org
 
-### EVM Key
-```bash
-# Using Node.js
-node -e "console.log('0x' + require('crypto').randomBytes(32).toString('hex'))"
+# Disable bridging for initial testing
+CROSS_CHAIN_ENABLED=false
 ```
 
-### Solana Key
+### 3. Install & Start Facilitator
+
 ```bash
-# Using solana-keygen (if you have Solana CLI)
-solana-keygen new --outfile ~/.config/solana/test-keypair.json
-solana-keygen pubkey ~/.config/solana/test-keypair.json
+pnpm install
+pnpm dev
 ```
 
-## 4. Run the Facilitator
-
-```bash
-# Development mode (with hot reload)
-npm run dev
-
-# Production mode
-npm run build
-npm start
+You should see:
+```
+✅ EVM Facilitator account: 0x...
+🚀 RailBridge Cross-Chain Facilitator listening on port 4022
 ```
 
-The facilitator will start on `http://localhost:4022`
+### 4. Start Merchant Server (New Terminal)
 
-## 5. Test the Facilitator
-
-### Check Health
 ```bash
+cd facilitator
+
+# Add to .env or create separate .env.merchant
+MERCHANT_PORT=4021
+FACILITATOR_URL=http://localhost:4022
+MERCHANT_ADDRESS=0xYourMerchantAddress
+```
+
+```bash
+pnpm test:merchant
+# or
+tsx src/merchant-server.ts
+```
+
+### 5. Test with Client
+
+Add to `.env`:
+```env
+TEST_WALLET_PRIVATE_KEY=0xYourTestWalletPrivateKey
+```
+
+```bash
+pnpm test:client
+# or
+tsx test-client.ts
+```
+
+## ✅ Expected Flow
+
+1. **Client** requests `/api/premium` → Gets `402 Payment Required`
+2. **Client** creates payment, signs, retries → Gets `200 OK`
+3. **Facilitator logs** show verification and settlement
+4. **Base Sepolia explorer** shows transaction: https://sepolia.basescan.org/
+
+## 🔍 Verify It Works
+
+```bash
+# Check facilitator
 curl http://localhost:4022/health
+
+# Check supported schemes
+curl http://localhost:4022/supported | jq
+
+# Test merchant (should get 402)
+curl -v http://localhost:4021/api/premium
 ```
 
-### Get Supported Schemes
-```bash
-curl http://localhost:4022/supported
-```
+## 📝 Network IDs
 
-## Next Steps
+- **Base Sepolia**: `eip155:84532`
+- **Base Mainnet**: `eip155:8453`
 
-1. **Integrate Bridge Service**: Update `src/services/bridgeService.ts` with your actual bridge implementation
-2. **Add More Chains**: Register additional networks in `src/index.ts`
-3. **Configure Bridge**: Add bridge API keys/endpoints to `.env`
+## 🐛 Troubleshooting
 
-## Troubleshooting
+**"Insufficient funds"**
+- Get more Base Sepolia ETH from faucet
 
-### "EVM_PRIVATE_KEY environment variable is required"
-- Make sure you've created `.env` file
-- Check that the private key starts with `0x`
+**"Token balance insufficient"**
+- Get testnet USDC or update asset address in merchant config
 
-### "SVM_PRIVATE_KEY environment variable is required"
-- Make sure your Solana key is in base58 format
-- You can convert from keypair JSON using Solana CLI
+**"No facilitator registered"**
+- Check facilitator is running on port 4022
+- Check `FACILITATOR_URL` in merchant server
 
-### RPC Connection Issues
-- Check your RPC URLs in `.env`
-- Make sure you have access to the RPC endpoints
-- For testnets, use public RPCs or get API keys from providers like Alchemy, Infura, QuickNode
-
+See `TESTING_GUIDE.md` for detailed instructions.

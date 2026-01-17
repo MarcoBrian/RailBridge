@@ -9,12 +9,16 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src --ext .ts"
+    "lint": "eslint src --ext .ts",
+    "test:client": "tsx test-client.ts",
+    "test:merchant": "tsx src/merchant-server.ts",
+    "example:client": "tsx src/client-example.ts"
   },
   "dependencies": {
     "@x402/core": "^2.1.0",
     "@x402/evm": "^2.1.0",
     "@x402/express": "^2.1.0",
+    "@x402/fetch": "^2.1.0",
     "@x402/svm": "^2.1.0",
     "@scure/base": "^1.2.6",
     "@solana/kit": "^2.1.1",
