@@ -66,24 +66,6 @@ export class BridgeService {
     return 1.0; // Placeholder
   }
 
-  /**
-   * Get bridge lock/escrow address on source chain
-   * This is where funds are locked before bridging
-   */
-  getLockAddress(sourceChain: Network): string {
-    // TODO: Return actual bridge contract addresses
-    
-    if (sourceChain.startsWith("eip155:")) {
-      // EVM bridge contract address
-      // This would be your actual bridge contract or Wormhole/LayerZero contract
-      return "0x0000000000000000000000000000000000000000"; // Placeholder
-    } else if (sourceChain.startsWith("solana:")) {
-      // Solana program address
-      return "11111111111111111111111111111111"; // Placeholder
-    }
-    
-    throw new Error(`Unsupported source chain: ${sourceChain}`);
-  }
 
   /**
    * Execute bridge transaction

@@ -9,8 +9,12 @@ import {
   CROSS_CHAIN,
 } from "./extensions/crossChain.js";
 import { HTTPFacilitatorClient } from "@x402/core/http";
+import type { PaymentPayload, PaymentRequirements, SettleResponse, VerifyResponse } from "@x402/core/types";
 import { registerExactEvmScheme } from "@x402/evm/exact/server";
-import { CrossChainServerScheme } from "./schemes/crossChainServer.js";
+import { createPaywall } from "@x402/paywall";
+import { evmPaywall } from "@x402/paywall/evm";
+import type { AssetAmount } from "@x402/core/types";
+import type { RoutesConfig, RouteConfig } from "@x402/core/http";
 
 // Get directory of current file (for ESM modules)
 const __filename = fileURLToPath(import.meta.url);
@@ -20,116 +24,171 @@ const __dirname = dirname(__filename);
 const envPath = join(__dirname, "..", ".env");
 dotenv.config({ path: envPath });
 
-// ---------------------------------------------------------------------------
-// Merchant-side x402 server that uses your RailBridge facilitator
-// ---------------------------------------------------------------------------
-
-// Required env vars for merchant
 const FACILITATOR_URL = process.env.FACILITATOR_URL || "http://localhost:4022";
 const MERCHANT_ADDRESS = process.env.MERCHANT_ADDRESS as `0x${string}` | undefined;
+const FACILITATOR_ADDRESS = process.env.FACILITATOR_ADDRESS as `0x${string}` | undefined;
 
 if (!MERCHANT_ADDRESS) {
   console.error("❌ MERCHANT_ADDRESS environment variable is required");
-  console.error("   This is where you want to receive payments on the destination chain");
   process.exit(1);
 }
 
-// Create HTTP client that talks to your RailBridge facilitator
-// This client communicates with the facilitator's /verify and /settle endpoints
-const facilitatorClient = new HTTPFacilitatorClient({
+// Create a wrapper around HTTPFacilitatorClient to add logging
+class LoggingFacilitatorClient extends HTTPFacilitatorClient {
+  async settle(
+    paymentPayload: PaymentPayload,
+    paymentRequirements: PaymentRequirements,
+  ): Promise<SettleResponse> {
+    console.log("📤 [MERCHANT] Calling facilitator.settle()", {
+      url: this.url,
+      scheme: paymentRequirements.scheme,
+      network: paymentRequirements.network,
+    });
+    
+    try {
+      const result = await super.settle(paymentPayload, paymentRequirements);
+      console.log("✅ [MERCHANT] Facilitator.settle() succeeded:", {
+        success: result.success,
+        transaction: result.transaction,
+        network: result.network,
+      });
+      return result;
+    } catch (error) {
+      console.error("❌ [MERCHANT] Facilitator.settle() failed:", error);
+      throw error;
+    }
+  }
+
+  async verify(
+    paymentPayload: PaymentPayload,
+    paymentRequirements: PaymentRequirements,
+  ): Promise<VerifyResponse> {
+    console.log("📤 [MERCHANT] Calling facilitator.verify()", {
+      url: this.url,
+      scheme: paymentRequirements.scheme,
+      network: paymentRequirements.network,
+    });
+    
+    try {
+      const result = await super.verify(paymentPayload, paymentRequirements);
+      console.log("✅ [MERCHANT] Facilitator.verify() succeeded:", {
+        isValid: result.isValid,
+        payer: result.payer,
+      });
+      return result;
+    } catch (error) {
+      console.error("❌ [MERCHANT] Facilitator.verify() failed:", error);
+      throw error;
+    }
+  }
+}
+
+const facilitatorClient = new LoggingFacilitatorClient({
   url: FACILITATOR_URL,
 });
 
-// Create core x402 resource server
-// This handles payment requirement building, verification, and settlement
+let facilitatorAddress: string | null = null;
+async function getFacilitatorAddress(): Promise<string | null> {
+  if (facilitatorAddress) return facilitatorAddress;
+  
+  try {
+    const supported = await facilitatorClient.getSupported();
+    const evmSigners = supported.signers["eip155:*"];
+    if (evmSigners && evmSigners.length > 0) {
+      facilitatorAddress = evmSigners[0];
+      console.log(`✅ Facilitator address: ${facilitatorAddress}`);
+      return facilitatorAddress;
+    }
+  } catch (error) {
+    console.warn("⚠️  Could not fetch facilitator address:", error);
+  }
+  
+  return null;
+}
+
 const resourceServer = new x402ResourceServer(facilitatorClient);
 
-// Register EVM scheme on the server side for "exact" scheme
-// This enables the server to:
-// - Parse prices (e.g., "$0.01" -> token amount)
-// - Build payment requirements for EVM networks
-// Register for specific networks to ensure validation passes
+// Add logging hooks to trace settlement flow
+resourceServer.onBeforeSettle(async (context) => {
+  console.log("🔍 [MERCHANT] Before settle:", {
+    scheme: context.requirements.scheme,
+    network: context.requirements.network,
+    amount: context.requirements.amount,
+  });
+});
+
+resourceServer.onAfterSettle(async (context) => {
+  console.log("✅ [MERCHANT] After settle:", {
+    success: context.result.success,
+    transaction: context.result.transaction,
+    network: context.result.network,
+  });
+});
+
+resourceServer.onSettleFailure(async (context) => {
+  console.error("❌ [MERCHANT] Settle failure:", {
+    error: context.error.message,
+    scheme: context.requirements.scheme,
+    network: context.requirements.network,
+  });
+});
+
 registerExactEvmScheme(resourceServer, {
   networks: [
-    "eip155:84532", // Base Sepolia
-    "eip155:8453",  // Base Mainnet
-    "eip155:1",     // Ethereum Mainnet
-    "eip155:137",   // Polygon
+    "eip155:84532",
+    "eip155:8453",
+    "eip155:1",
+    "eip155:11155111",
+    "eip155:137",
   ],
 });
 
-// Register "cross-chain" scheme on the server side
-// The server-side operations (price parsing, requirement building) are identical to "exact"
-// The actual cross-chain routing is handled by the facilitator, not the server
-// We use CrossChainServerScheme which delegates to ExactEvmScheme for server logic
-const crossChainServerScheme = new CrossChainServerScheme();
-resourceServer.register("eip155:84532", crossChainServerScheme); // Base Sepolia
-resourceServer.register("eip155:8453", crossChainServerScheme); // Base Mainnet
-resourceServer.register("eip155:1", crossChainServerScheme); // Ethereum Mainnet
-resourceServer.register("eip155:137", crossChainServerScheme); // Polygon
-
-// Note: Cross-chain extension is declared in route config (see below)
-// The server automatically includes it in PaymentRequired responses
-// The facilitator extracts it from PaymentPayload to handle cross-chain routing
-
-// Define payment-protected routes for this merchant
 const routes = {
   "GET /api/premium": {
     accepts: [
-      // Simple same-chain EVM payment (Base Sepolia testnet)
       {
         scheme: "exact" as const,
-        network: "eip155:84532" as const, // Base Sepolia testnet
-        price: "$0.01",
-        payTo: MERCHANT_ADDRESS, // Merchant receives directly on same chain
-      },
-      // Example: cross-chain option using "cross-chain" scheme
-      // This is a routing wrapper around "exact" scheme that handles bridging
-      // For testing: Use Base Sepolia for both source and destination (bridging disabled)
-      {
-        scheme: "cross-chain" as const,
-        network: "eip155:84532" as const, // Base Sepolia (destination - where merchant receives)
-        price: "$0.01",
-        payTo: MERCHANT_ADDRESS, // Merchant receives on destination chain after bridging
+        network: "eip155:84532" as const,
+        price: {
+          asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+          amount: "10000",
+          extra: {
+            name: "USDC",
+            version: "2",
+          },
+        } as AssetAmount,
+        payTo: FACILITATOR_ADDRESS || "0x0000000000000000000000000000000000000000",
         extra: {
-          // Optional metadata for your UI / analytics
-          description: "Cross-chain payment (testnet - bridging disabled)",
+          description: "Cross-chain payment: Pay on Base Sepolia, receive on Ethereum Sepolia",
         },
       },
     ],
     description: "Premium API endpoint",
     mimeType: "application/json",
-    // Extensions: Add cross-chain extension to indicate source chain info
-    // Note: The client will copy this extension into PaymentPayload
-    // The facilitator will extract it to know where the user is paying from
     extensions: {
-      [CROSS_CHAIN]: declareCrossChainExtension(
-        "eip155:84532", // Source network: Base Sepolia (where user pays)
-        "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // USDC on Base Sepolia testnet
-      ),
+      [CROSS_CHAIN]: declareCrossChainExtension({
+        destinationNetwork: "eip155:11155111",
+        destinationAsset: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+        destinationPayTo: MERCHANT_ADDRESS,
+      }),
     },
   },
 };
 
-// Initialize Express app
 const app = express();
 app.use(express.json());
 
-// Add request logging middleware
-// This logs all incoming requests before payment middleware processes them
 app.use((req, res, next) => {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] ${req.method} ${req.path}`);
   console.log(`   IP: ${req.ip || req.socket.remoteAddress}`);
   console.log(`   User-Agent: ${req.get("user-agent") || "unknown"}`);
   
-  // Log payment header if present
   const paymentHeader = req.get("payment-signature") || req.get("x-payment");
   if (paymentHeader) {
     console.log(`   Payment: ${paymentHeader.substring(0, 50)}...`);
   }
   
-  // Track response time
   const startTime = Date.now();
   res.on("finish", () => {
     const duration = Date.now() - startTime;
@@ -139,35 +198,123 @@ app.use((req, res, next) => {
   next();
 });
 
-// Use payment middleware
-// The middleware automatically initializes the server on first request
-// It fetches supported schemes from the facilitator and validates routes
-app.use(
-  paymentMiddleware(
-    routes,
+const paywall = createPaywall()
+  .withNetwork(evmPaywall)
+  .withConfig({
+    appName: "RailBridge Merchant (Cross-Chain Only)",
+    testnet: true,
+  })
+  .build();
+
+async function initializeRoutes() {
+  let facilitatorAddr = FACILITATOR_ADDRESS;
+  
+  if (!facilitatorAddr) {
+    const fetchedAddr = await getFacilitatorAddress();
+    if (!fetchedAddr) {
+      console.warn("⚠️  Could not fetch facilitator address. Cross-chain payments may fail.");
+      console.warn("   Set FACILITATOR_ADDRESS in .env to avoid this warning.");
+      return routes;
+    }
+    facilitatorAddr = fetchedAddr as `0x${string}`;
+    console.log(`✅ Fetched facilitator address: ${facilitatorAddr}`);
+  } else {
+    console.log(`✅ Using facilitator address from env: ${facilitatorAddr}`);
+  }
+
+  const transformedRoutes = JSON.parse(JSON.stringify(routes)) as RoutesConfig;
+  
+  if (typeof transformedRoutes === "object" && !Array.isArray(transformedRoutes)) {
+    for (const [routeKey, routeConfig] of Object.entries(transformedRoutes)) {
+      const config = routeConfig as RouteConfig;
+      if (config.extensions?.[CROSS_CHAIN]) {
+        if (config.accepts) {
+          const accepts = Array.isArray(config.accepts) ? config.accepts : [config.accepts];
+          for (const accept of accepts) {
+            if (!accept.payTo || accept.payTo === "0x0000000000000000000000000000000000000000") {
+              accept.payTo = facilitatorAddr as `0x${string}`;
+              console.log(`✅ Updated ${routeKey}: payTo = ${facilitatorAddr}`);
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  return transformedRoutes;
+}
+
+async function startServer() {
+  const finalRoutes = await initializeRoutes();
+
+  console.log("🔍 Routes being passed to middleware:", JSON.stringify(finalRoutes, null, 2));
+  console.log("🔍 Route keys:", Object.keys(finalRoutes));
+
+  try {
+  // Create payment middleware
+  const baseMiddleware = paymentMiddleware(
+    finalRoutes,
     resourceServer,
-    undefined, // paywallConfig (optional - for built-in paywall UI)
-    undefined, // paywall provider (optional - for custom paywall)
-    true, // syncFacilitatorOnStart - fetch facilitator capabilities on startup
-  ),
-);
+    undefined,
+    paywall,
+    true,
+  );
 
-// Business logic route (protected by paymentMiddleware)
-app.get("/api/premium", (req, res) => {
-  // At this point, payment has been:
-  // - Required (402 if unpaid)
-  // - Verified via your facilitator
-  // - Settled via your facilitator
+  // Wrap the middleware to add logging and ensure it's called
+  app.use((req, res, next) => {
+    console.log(`\n🔍 [MIDDLEWARE WRAPPER] Request: ${req.method} ${req.path}`);
+    console.log(`   Payment header: ${req.get("payment-signature") || req.get("x-payment") || "NONE"}`);
+    console.log(`   URL: ${req.url}`);
+    console.log(`   Original URL: ${req.originalUrl}`);
+    
+    // Call the actual payment middleware
+    const middlewareResult = baseMiddleware(req, res, (err?: any) => {
+      if (err) {
+        console.error(`❌ [MIDDLEWARE WRAPPER] Error from payment middleware:`, err);
+      } else {
+        console.log(`✅ [MIDDLEWARE WRAPPER] Payment middleware completed, calling next()`);
+      }
+      next(err);
+    });
+    
+    // Handle promise if middleware returns one
+    if (middlewareResult && typeof middlewareResult.then === 'function') {
+      middlewareResult.catch((err: any) => {
+        console.error(`❌ [MIDDLEWARE WRAPPER] Promise rejection from payment middleware:`, err);
+        next(err);
+      });
+    }
+  });
+    console.log("✅ Payment middleware registered successfully");
+  } catch (error) {
+    console.error("❌ Failed to register payment middleware:", error);
+    throw error;
+  }
 
-  // Log successful payment access
+  // Register route handler AFTER middleware (important for Express middleware order)
+  app.get("/api/premium", (req, res) => {
+  console.log(`\n🔍 ===== REQUEST DEBUG =====`);
+  console.log(`Path: ${req.path}`);
+  console.log(`Method: ${req.method}`);
+  console.log(`Status Code: ${res.statusCode}`);
+  
+  // Check if payment header was sent
+  const paymentHeader = req.get("payment-signature") || req.get("x-payment");
+  if (paymentHeader) {
+    console.log(`📝 Payment header present: ${String(paymentHeader).substring(0, 50)}...`);
+  } else {
+    console.warn(`⚠️  No payment header found - request may have bypassed payment middleware`);
+    console.warn(`⚠️  This means payment verification/settlement was NOT performed!`);
+  }
+  
   console.log(`✅ Premium content accessed - Payment verified and settled`);
   
-  // Extract payment info from response headers (set by paymentMiddleware after settlement)
-  const paymentTx = res.getHeader("x-payment-transaction");
-  const paymentNetwork = res.getHeader("x-payment-network");
-  if (paymentTx) {
-    console.log(`   Transaction: ${paymentTx}`);
-    console.log(`   Network: ${paymentNetwork || "unknown"}`);
+  // Check if PAYMENT-RESPONSE header is set (should be set by middleware after settlement)
+  const paymentResponseHeader = res.getHeader("PAYMENT-RESPONSE") || res.getHeader("payment-response");
+  if (paymentResponseHeader) {
+    console.log(`💰 PAYMENT-RESPONSE header found: ${String(paymentResponseHeader).substring(0, 100)}...`);
+  } else {
+    console.warn(`⚠️  PAYMENT-RESPONSE header NOT found - settlement headers may not be set`);
   }
 
   res.json({
@@ -177,14 +324,44 @@ app.get("/api/premium", (req, res) => {
       value: "premium-data",
     },
   });
+  });
+
+  // Error handler
+  app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const timestamp = new Date().toISOString();
+    console.error(`[${timestamp}] ❌ Error handling request ${req.method} ${req.path}:`);
+    console.error(`   Error: ${err.message}`);
+    console.error(`   Stack: ${err.stack}`);
+    
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: "Internal server error",
+        message: process.env.NODE_ENV === "development" ? err.message : "An error occurred processing your request",
+        timestamp,
+      });
+    }
+  });
+
+  const PORT = process.env.MERCHANT_PORT || "4021";
+  app.listen(parseInt(PORT), () => {
+    console.log(`🛒 Merchant server (cross-chain only) listening at http://localhost:${PORT}`);
+    console.log(`Using facilitator at: ${FACILITATOR_URL}`);
+    console.log(`Merchant address: ${MERCHANT_ADDRESS}`);
+    console.log(`💡 Cross-chain: Users pay on Base Sepolia, merchant receives on Ethereum Sepolia`);
+  });
+}
+
+startServer().catch((error) => {
+  console.error("❌ Failed to start server:", error);
+  process.exit(1);
 });
 
-const PORT = process.env.MERCHANT_PORT || "4021";
+process.on("unhandledRejection", (reason: unknown, promise: Promise<unknown>) => {
+  console.error("❌ Unhandled Rejection at:", promise, "reason:", reason);
+});
 
-app.listen(parseInt(PORT), () => {
-  console.log(`🛒 Merchant server listening at http://localhost:${PORT}`);
-  console.log(`Using facilitator at: ${FACILITATOR_URL}`);
-  console.log(`Merchant address: ${MERCHANT_ADDRESS}`);
+process.on("uncaughtException", (error: Error) => {
+  console.error("❌ Uncaught Exception:", error);
 });
 
 

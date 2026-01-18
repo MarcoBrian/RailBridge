@@ -10,6 +10,20 @@ This document provides detailed technical diagrams showing how components intera
 5. [Payment Verification Flow](#payment-verification-flow)
 6. [Payment Settlement Flow](#payment-settlement-flow)
 7. [Cross-Chain Payment Flow](#cross-chain-payment-flow)
+8. [Cross-Chain System Guide](#cross-chain-system-guide)
+
+---
+
+## Cross-Chain System Guide
+
+For a complete guide to how the cross-chain payment system works, see [CROSS_CHAIN_SYSTEM.md](./CROSS_CHAIN_SYSTEM.md).
+
+This document covers:
+- Extension-based design principles
+- Component roles and responsibilities
+- Complete payment flow with examples
+- Data flow diagrams
+- Key files and their functions
 
 ---
 
@@ -860,16 +874,26 @@ Source Chain (Base)                    Bridge                      Dest Chain (P
 
 ### Cross-Chain Architecture Notes
 
-**Key Design Decision**: Cross-chain is implemented as a routing wrapper (`CrossChainRouter`), not a separate payment scheme. This is because:
+**Key Design Decision**: Cross-chain uses an **extension-based design**, not a scheme-based design. This means:
 
-- **Verification logic is identical**: Both use EIP-3009 signature verification on the source chain
-- **Settlement logic is identical**: Both use `transferWithAuthorization` on the source chain
-- **Only difference is routing**: Cross-chain settles to bridge lock address, then bridges to destination
+- **Any scheme can be cross-chain**: `scheme: "exact"` + `extensions: {cross-chain}` = cross-chain exact payment
+- **Client-agnostic**: Clients never see cross-chain complexity - they only see base scheme on source network
+- **Server-side transformation**: Merchant server transforms destination → source before sending to clients
+- **Facilitator routing**: Facilitator detects cross-chain by extension, routes to `CrossChainRouter`
 
 **Flow**:
-1. `CrossChainRouter.verify()` → Creates source chain requirements → Delegates to `ExactEvmScheme.verify()`
-2. `CrossChainRouter.settle()` → Creates source chain requirements → Delegates to `ExactEvmScheme.settle()` → Bridges funds
-3. Bridge liquidity checks performed in `onBeforeVerify` hooks (not in router)
+1. **Merchant** defines: `scheme: "exact"`, `network: destination`, `extensions: {cross-chain: {sourceNetwork}}`
+2. **Server** transforms: `scheme: "exact"`, `network: source` (keeps scheme, changes network)
+3. **Client** sees: Normal "exact" payment on source network
+4. **Client** pays: On source chain (unaware of cross-chain)
+5. **Facilitator** detects: Extension in payload → routes to `CrossChainRouter`
+6. **CrossChainRouter**: Creates source requirements → Delegates to `ExactEvmScheme` → Bridges funds
+
+**Benefits**:
+- ✅ Scheme-agnostic (works with exact, bazaar, subscription, etc.)
+- ✅ Client simplicity (no cross-chain awareness needed)
+- ✅ Clear separation (scheme = payment mechanism, extension = routing mechanism)
+- ✅ Extensible (easy to add cross-chain to new schemes)
 
 This architecture provides:
 - ✅ Separation of concerns

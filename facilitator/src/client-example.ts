@@ -10,8 +10,6 @@
  * 3. Wallet must have testnet USDC (or update asset address)
  * 4. Facilitator and merchant server must be running
  * 
- * Usage:
- *   tsx src/client-example.ts
  */
 
 import dotenv from "dotenv";
@@ -20,6 +18,7 @@ import { dirname, join } from "path";
 import { wrapFetchWithPayment } from "@x402/fetch";
 import { x402Client, x402HTTPClient } from "@x402/core/client";
 import { registerExactEvmScheme } from "@x402/evm/exact/client";
+import type { PaymentRequirements } from "@x402/core/types";
 import { createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
@@ -54,11 +53,46 @@ const viemClient = createWalletClient({
   transport: http(process.env.EVM_RPC_URL || "https://sepolia.base.org"),
 });
 
+// Create x402 client with custom network selector
+// Option 1: Custom selector function to prefer specific networks
+const preferredNetworks = [
+  "eip155:84532", // Base Sepolia (preferred)
+  "eip155:8453",  // Base Mainnet (second choice)
+  "eip155:1",     // Ethereum Mainnet (third choice)
+  "eip155:137",   // Polygon (last resort)
+];
+
+const networkSelector = (
+  _x402Version: number,
+  options: PaymentRequirements[],
+): PaymentRequirements => {
+  console.log("📋 Available payment options:");
+  options.forEach((opt, i) => {
+    console.log(`   ${i + 1}. ${opt.network} (${opt.scheme}) - Amount: ${opt.amount}`);
+  });
+
+  // Try each preferred network in order
+  for (const preferredNetwork of preferredNetworks) {
+    const match = options.find(opt => opt.network === preferredNetwork);
+    if (match) {
+      console.log(`✨ Selected preferred network: ${match.network}`);
+      return match;
+    }
+  }
+
+  // Fallback to first available option
+  console.log(`⚠️  No preferred network available, using: ${options[0].network}`);
+  return options[0];
+};
+
 // Create x402 client
-const client = new x402Client();
+// Note: The server transforms cross-chain requirements to "exact" on source network
+// So the client only needs to register "exact" scheme - no cross-chain awareness needed!
+const client = new x402Client(networkSelector);
 
 // Register EVM scheme with the client
 // This enables the client to create payment payloads for EVM networks
+// The server handles cross-chain transformation, so client only sees "exact" scheme
 registerExactEvmScheme(client, { signer });
 
 
@@ -83,84 +117,162 @@ async function exampleSameChainPayment() {
 
   try {
     // Make request - payment is handled automatically
+    // NOTE: wrapFetchWithPayment makes TWO calls:
+    // 1. First call: Without payment → Gets 402 Payment Required
+    // 2. Second call: With payment header → Should get 200 (or 402 if payment fails)
+    console.log("📤 Making first request (without payment)...");
     const response = await fetchWithPayment(`${MERCHANT_URL}/api/premium`, {
       method: "GET",
     });
 
-    console.log(`📥 Response status: ${response.status}`);
+    console.log(`📥 Final response status: ${response.status}`);
+    console.log("   (This is the result after automatic retry with payment)");
 
     if (response.ok) {
+      // Payment was successful! (status 200)
+      console.log("\n" + "=".repeat(60));
+      console.log("✅✅✅ PAYMENT SUCCESSFUL! ✅✅✅");
+      console.log("=".repeat(60));
+      console.log("\n💡 Status 200 = Payment verified and settled on-chain");
       const data = await response.json();
-      console.log("✅ Payment successful!");
-      console.log("📦 Response data:", JSON.stringify(data, null, 2));
+      console.log("\n📦 Response data:", JSON.stringify(data, null, 2));
 
       // Get payment receipt from response headers
       const httpClient = new x402HTTPClient(client);
-      const paymentResponse = httpClient.getPaymentSettleResponse(
-        (name) => response.headers.get(name),
-      );
+      
+      // Debug: Log all response headers
+      console.log("\n📋 Response headers:");
+      response.headers.forEach((value, key) => {
+        console.log(`   ${key}: ${value.substring(0, 100)}${value.length > 100 ? "..." : ""}`);
+      });
+      
+      try {
+        const paymentResponse = httpClient.getPaymentSettleResponse(
+          (name) => response.headers.get(name),
+        );
 
-      if (paymentResponse) {
-        console.log("\n💰 Payment Receipt:");
-        console.log(`   Transaction: ${paymentResponse.transaction}`);
-        console.log(`   Network: ${paymentResponse.network}`);
-        console.log(`   Success: ${paymentResponse.success}`);
+        if (paymentResponse) {
+          console.log("\n💰 Payment Receipt (from response headers):");
+          console.log(JSON.stringify(paymentResponse, null, 2));
+          console.log(`\n   ✅ Transaction: ${paymentResponse.transaction}`);
+          console.log(`   ✅ Network: ${paymentResponse.network}`);
+          console.log(`   ✅ Success: ${paymentResponse.success}`);
+          if (paymentResponse.payer) {
+            console.log(`   ✅ Payer: ${paymentResponse.payer}`);
+          }
+        }
+      } catch (error) {
+        console.log("\n⚠️  Could not extract payment receipt from headers");
+        console.log(`   Error: ${error instanceof Error ? error.message : error}`);
+        console.log("   This is not critical - payment was successful, just missing receipt info");
       }
     } else {
-      // Detailed error logging
-      console.error("❌ Request failed with status:", response.status);
-      console.error("📋 Response headers:");
-      response.headers.forEach((value, key) => {
-        console.error(`   ${key}: ${value.substring(0, 100)}${value.length > 100 ? "..." : ""}`);
-      });
-
-      // Try to get response body
+      // Payment failed - make it very explicit
+      console.log("\n" + "=".repeat(60));
+      console.log("❌❌❌ PAYMENT FAILED ❌❌❌");
+      console.log("=".repeat(60));
+      console.error(`\n📊 Response Status: ${response.status}`);
+      
+      // Try to get response body first
       let errorBody: any;
+      let responseText: string = "";
       try {
-        const text = await response.text();
-        if (text) {
-          errorBody = JSON.parse(text);
-          console.error("📦 Response body:", JSON.stringify(errorBody, null, 2));
-        } else {
-          console.error("📦 Response body: (empty)");
+        responseText = await response.text();
+        if (responseText) {
+          errorBody = JSON.parse(responseText);
         }
       } catch (parseError) {
-        console.error("📦 Response body: (could not parse)");
+        // Response body might not be JSON
       }
 
-      // If it's a 402, try to parse payment requirements manually
+      // If it's a 402, parse payment requirements and determine failure reason
       if (response.status === 402) {
-        console.error("\n💡 Debugging 402 Payment Required:");
         const httpClient = new x402HTTPClient(client);
         try {
           const getHeader = (name: string) => response.headers.get(name);
           const paymentRequired = httpClient.getPaymentRequiredResponse(getHeader, errorBody);
-          console.error("📋 Payment Requirements parsed:");
-          console.error(JSON.stringify(paymentRequired, null, 2));
           
-          // Try to create payment payload to see what fails
-          console.error("\n🔍 Attempting to create payment payload...");
-          try {
-            const paymentPayload = await client.createPaymentPayload(paymentRequired);
-            console.error("✅ Payment payload created successfully");
-            console.error("   Payload preview:", JSON.stringify({
-              x402Version: paymentPayload.x402Version,
-              scheme: paymentPayload.accepted.scheme,
-              network: paymentPayload.accepted.network,
-              amount: paymentPayload.accepted.amount,
-            }, null, 2));
-          } catch (payloadError) {
-            console.error("❌ Failed to create payment payload:");
-            console.error("   Error:", payloadError instanceof Error ? payloadError.message : payloadError);
-            if (payloadError instanceof Error && payloadError.stack) {
-              console.error("   Stack:", payloadError.stack);
+          // Determine if payment was attempted or not
+          const paymentError = paymentRequired.error;
+          const paymentWasAttempted = !!paymentError;
+          
+          if (paymentWasAttempted && paymentError) {
+            // Payment was sent but failed verification/settlement
+            console.error("\n🔴 PAYMENT VERIFICATION/SETTLEMENT FAILED");
+            console.error("   The payment was sent but could not be verified or settled.");
+            console.error(`\n❌ Error Code: ${paymentError}`);
+            
+            // Provide specific error messages
+            if (paymentError === "insufficient_funds") {
+              console.error("\n💸 INSUFFICIENT FUNDS");
+              console.error("   Your wallet doesn't have enough USDC to complete this payment.");
+              const requiredAmount = paymentRequired.accepts[0]?.amount || "unknown";
+              const requiredAmountUsdc = parseInt(requiredAmount) / 1e6;
+              console.error(`\n   Required Amount: ${requiredAmount} (${requiredAmountUsdc} USDC)`);
+              console.error(`   Asset Address: ${paymentRequired.accepts[0]?.asset || "unknown"}`);
+              console.error(`   Network: ${paymentRequired.accepts[0]?.network || "unknown"}`);
+              console.error("\n   💡 To fix this:");
+              console.error("      1. Get testnet USDC on Base Sepolia");
+              console.error("      2. Make sure your wallet has enough balance");
+              console.error("      3. Try the payment again");
+            } else if (paymentError === "invalid_payment") {
+              console.error("\n🔐 INVALID PAYMENT");
+              console.error("   The payment signature or format is invalid.");
+              console.error("   This could mean:");
+              console.error("      - Payment signature is malformed");
+              console.error("      - Payment payload doesn't match requirements");
+              console.error("      - Payment has expired");
+            } else if (paymentError.includes("verification")) {
+              console.error("\n🔍 VERIFICATION FAILED");
+              console.error("   The facilitator could not verify your payment.");
+              console.error(`   Reason: ${paymentError}`);
+            } else if (paymentError.includes("signature")) {
+              console.error("\n✍️  SIGNATURE INVALID");
+              console.error("   The payment signature could not be verified.");
+              console.error("   This could mean:");
+              console.error("      - Signature doesn't match the payment data");
+              console.error("      - Wrong private key was used");
+              console.error("      - Payment was modified after signing");
+            } else {
+              console.error(`\n⚠️  PAYMENT ERROR: ${paymentError}`);
+              console.error("   The payment failed for an unknown reason.");
             }
+            
+            // Show payment requirements for debugging
+            console.error("\n📋 Payment Requirements (for debugging):");
+            console.error(JSON.stringify(paymentRequired, null, 2));
+          } else {
+            // No payment was sent - this shouldn't happen with wrapFetchWithPayment
+            console.error("\n⚠️  UNEXPECTED STATE");
+            console.error("   Received 402 but no error message.");
+            console.error("   This might indicate the payment wasn't sent properly.");
+            console.error("\n📋 Payment Requirements:");
+            console.error(JSON.stringify(paymentRequired, null, 2));
           }
         } catch (parseError) {
-          console.error("❌ Failed to parse payment requirements:");
+          console.error("\n⚠️  FAILED TO PARSE ERROR RESPONSE");
+          console.error("   Could not parse the error response from the server.");
           console.error("   Error:", parseError instanceof Error ? parseError.message : parseError);
+          if (responseText) {
+            console.error("\n   Raw response:", responseText.substring(0, 500));
+          }
+        }
+      } else {
+        // Non-402 error
+        console.error("\n⚠️  UNEXPECTED HTTP ERROR");
+        console.error(`   Status: ${response.status}`);
+        if (errorBody) {
+          console.error("   Response body:", JSON.stringify(errorBody, null, 2));
+        } else if (responseText) {
+          console.error("   Response text:", responseText.substring(0, 500));
         }
       }
+      
+      // Always show response headers for debugging
+      console.error("\n📋 Response Headers (for debugging):");
+      response.headers.forEach((value, key) => {
+        console.error(`   ${key}: ${value.substring(0, 100)}${value.length > 100 ? "..." : ""}`);
+      });
     }
   } catch (error) {
     console.error("❌ Error:", error instanceof Error ? error.message : error);
@@ -323,7 +435,7 @@ async function main() {
   // await exampleManualPaymentFlow(); // Commented out for testing
 
   console.log("\n" + "=".repeat(60));
-  console.log("✅ Examples complete!");
+  console.log("Examples complete!");
   console.log("=".repeat(60) + "\n");
 }
 

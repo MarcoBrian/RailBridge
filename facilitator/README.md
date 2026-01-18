@@ -172,7 +172,7 @@ See `src/services/bridgeService.ts` for the interface to implement.
 
 A merchant integrates with this facilitator by:
 
-1. Running the facilitator (`src/index.ts`)
+1. Running the facilitator (`src/facilitator-implementation.ts`)
 2. Running a merchant server that points to the facilitator (for example `src/merchant-server.ts`)
 
 ### Minimal Express Merchant Server
@@ -293,7 +293,7 @@ This keeps your merchant and facilitator APIs unchanged while allowing richer cl
 ```
 facilitator/
 ├── src/
-│   ├── index.ts              # Main facilitator server (EVM + cross-chain)
+│   ├── facilitator-implementation.ts  # Main facilitator server (EVM + cross-chain)
 │   ├── merchant-server.ts    # Example merchant Express server
 │   ├── schemes/
 │   │   └── crossChainRouter.ts  # Cross-chain routing wrapper (delegates to ExactEvmScheme)

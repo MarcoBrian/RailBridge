@@ -8,6 +8,7 @@ export interface BridgeConfig {
   rpcUrls?: {
     [chainId: string]: string;
   };
+  facilitatorAddress?: string; // Facilitator address to use as bridge lock address for testing
 }
 
 export interface BridgeLiquidityCheck {

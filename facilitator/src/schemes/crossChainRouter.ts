@@ -12,20 +12,19 @@
 
 import { SchemeNetworkFacilitator } from "@x402/core/types";
 import { PaymentPayload, PaymentRequirements, Network, VerifyResponse, SettleResponse } from "@x402/core/types";
-import { ExactEvmScheme } from "@x402/evm/exact/facilitator";
 import { BridgeService } from "../services/bridgeService.js";
-import { extractCrossChainInfo } from "../extensions/crossChain.js";
+import { extractCrossChainInfo, type CrossChainInfo } from "../extensions/crossChain.js";
 
 export interface CrossChainRouterConfig {
   isEnabled?: boolean; // Default: true
 }
 
 /**
- * Cross-chain router that delegates to ExactEvmScheme for source chain operations,
+ * Cross-chain router that delegates to the appropriate scheme facilitator for source chain operations,
  * then bridges funds to destination chain.
  * 
  * This is NOT a different payment scheme - it's just routing logic.
- * The payment mechanism is still "exact" (EIP-3009 transferWithAuthorization).
+ * It works with any scheme (exact, bazaar, subscription, etc.) by delegating to the registered facilitator.
  */
 export class CrossChainRouter implements SchemeNetworkFacilitator {
   readonly scheme = "cross-chain";
@@ -33,7 +32,11 @@ export class CrossChainRouter implements SchemeNetworkFacilitator {
   private readonly isEnabled: boolean;
 
   constructor(
-    private exactEvmScheme: ExactEvmScheme,
+    /**
+     * Map of scheme name -> facilitator instance
+     * Used to look up the appropriate facilitator based on requirements.scheme
+     */
+    private schemeFacilitators: Map<string, SchemeNetworkFacilitator>,
     private bridgeService: BridgeService,
     config?: CrossChainRouterConfig,
   ) {
@@ -48,14 +51,18 @@ export class CrossChainRouter implements SchemeNetworkFacilitator {
   }
 
   getSigners(network: Network): string[] {
-    return this.exactEvmScheme.getSigners(network);
+    // Return signers from the first registered scheme facilitator
+    // In practice, all EVM schemes should have the same signers
+    const firstFacilitator = Array.from(this.schemeFacilitators.values())[0];
+    return firstFacilitator?.getSigners(network) || [];
   }
 
   async verify(
     payload: PaymentPayload,
     requirements: PaymentRequirements,
   ): Promise<VerifyResponse> {
-    // Extract source chain info from extension
+    // Extract destination chain info from extension
+    // Route network is source (where user pays), extension is destination (where merchant receives)
     const crossChainInfo = extractCrossChainInfo(payload);
     if (!crossChainInfo) {
       return {
@@ -64,26 +71,40 @@ export class CrossChainRouter implements SchemeNetworkFacilitator {
       };
     }
 
-    // Create source chain requirements
-    // If bridging disabled: verify payment to merchant on source chain
-    // If bridging enabled: verify payment to bridge lock on source chain
-    const payToAddress = this.isEnabled
-      ? this.bridgeService.getLockAddress(crossChainInfo.sourceNetwork as Network)
-      : requirements.payTo; // Merchant address when bridging disabled
+    // Route network is the source (where user pays)
+    const sourceNetwork = requirements.network as Network;
+    const sourceAsset = requirements.asset;
+
+    // Extension contains destination (where merchant receives)
+    const destinationNetwork = crossChainInfo.destinationNetwork as Network;
+
+    // Use requirements.payTo (facilitator address on source chain)
+    // This is where the user pays on the source chain
+    // Extension has destinationPayTo (merchant address on destination chain) for bridging
+    const payToAddress = requirements.payTo; // Facilitator address on source chain
+
+    // Look up the appropriate scheme facilitator
+    const schemeFacilitator = this.schemeFacilitators.get(requirements.scheme);
+    if (!schemeFacilitator) {
+      return {
+        isValid: false,
+        invalidReason: `cross_chain_not_supported_for_scheme: ${requirements.scheme}. No facilitator registered for this scheme.`,
+      };
+    }
 
     const sourceRequirements: PaymentRequirements = {
-      scheme: "exact",
-      network: crossChainInfo.sourceNetwork as Network,
-      asset: crossChainInfo.sourceAsset,
+      scheme: requirements.scheme, // Use original scheme (exact, bazaar, etc.)
+      network: sourceNetwork, // Route network is source
+      asset: sourceAsset, // Route asset is source asset
       amount: requirements.amount,
       payTo: payToAddress,
       maxTimeoutSeconds: requirements.maxTimeoutSeconds,
       extra: requirements.extra,
     };
 
-    // Delegate verification to exact scheme on source chain
+    // Delegate verification to the appropriate scheme facilitator on source chain
     try {
-      return await this.exactEvmScheme.verify(payload, sourceRequirements);
+      return await schemeFacilitator.verify(payload, sourceRequirements);
     } catch (error) {
       return {
         isValid: false,
@@ -119,38 +140,67 @@ export class CrossChainRouter implements SchemeNetworkFacilitator {
       };
     }
 
+    // Route network is the source (where user pays)
+    const sourceNetwork = requirements.network as Network;
+    const sourceAsset = requirements.asset;
+
     // If bridging is disabled, settle directly to merchant on source chain
     if (!this.isEnabled) {
       const sourceRequirements: PaymentRequirements = {
-        scheme: "exact",
-        network: crossChainInfo.sourceNetwork as Network,
-        asset: crossChainInfo.sourceAsset,
+        scheme: requirements.scheme, // Use original scheme
+        network: sourceNetwork, // Route network is source
+        asset: sourceAsset, // Route asset is source asset
         amount: requirements.amount,
         payTo: requirements.payTo, // Merchant address - settle directly to merchant
         maxTimeoutSeconds: requirements.maxTimeoutSeconds,
         extra: requirements.extra,
       };
 
-      const settleResult = await this.exactEvmScheme.settle(payload, sourceRequirements);
+      // Look up the appropriate scheme facilitator
+      const schemeFacilitator = this.schemeFacilitators.get(requirements.scheme);
+      if (!schemeFacilitator) {
+        return {
+          success: false,
+          network: sourceNetwork,
+          transaction: "",
+          errorReason: `cross_chain_not_supported_for_scheme: ${requirements.scheme}. No facilitator registered for this scheme.`,
+          payer: verifyResult.payer,
+        };
+      }
+
+      const settleResult = await schemeFacilitator.settle(payload, sourceRequirements);
       return {
         ...settleResult,
-        network: crossChainInfo.sourceNetwork as Network,
+        network: sourceNetwork,
       };
     }
 
-    // If bridging is enabled, settle to bridge lock address on source chain
-    const bridgeLockAddress = this.bridgeService.getLockAddress(crossChainInfo.sourceNetwork as Network);
+    // If bridging is enabled, settle to facilitator address on source chain
+    // requirements.payTo is the facilitator address (where client paid)
+    const bridgeLockAddress = requirements.payTo; // Facilitator address on source chain
     const sourceRequirements: PaymentRequirements = {
-      scheme: "exact",
-      network: crossChainInfo.sourceNetwork as Network,
-      asset: crossChainInfo.sourceAsset,
+      scheme: requirements.scheme, // Use original scheme
+      network: sourceNetwork, // Route network is source
+      asset: sourceAsset, // Route asset is source asset
       amount: requirements.amount,
-      payTo: bridgeLockAddress, // Bridge lock address - will be bridged later
+      payTo: bridgeLockAddress, // Bridge lock address from extension - will be bridged later
       maxTimeoutSeconds: requirements.maxTimeoutSeconds,
       extra: requirements.extra,
     };
 
-    const settleResult = await this.exactEvmScheme.settle(payload, sourceRequirements);
+    // Look up the appropriate scheme facilitator
+    const schemeFacilitator = this.schemeFacilitators.get(requirements.scheme);
+    if (!schemeFacilitator) {
+      return {
+        success: false,
+        network: sourceNetwork,
+        transaction: "",
+        errorReason: `cross_chain_not_supported_for_scheme: ${requirements.scheme}. No facilitator registered for this scheme.`,
+        payer: verifyResult.payer,
+      };
+    }
+
+    const settleResult = await schemeFacilitator.settle(payload, sourceRequirements);
 
     if (!settleResult.success) {
       return settleResult;
@@ -160,10 +210,10 @@ export class CrossChainRouter implements SchemeNetworkFacilitator {
     // Bridging will happen asynchronously in onAfterSettle hook
     // Return source chain settlement result
     // The hook will detect cross-chain by comparing:
-    // - result.network (source) vs requirements.network (destination)
+    // - result.network (source) vs crossChainInfo.destinationNetwork (destination)
     return {
       ...settleResult,
-      network: crossChainInfo.sourceNetwork as Network,
+      network: sourceNetwork,
     };
   }
 }

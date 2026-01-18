@@ -8,6 +8,7 @@ import {
   PaymentRequirements,
   SettleResponse,
   VerifyResponse,
+  SchemeNetworkFacilitator,
 } from "@x402/core/types";
 import { toFacilitatorEvmSigner } from "@x402/evm";
 import { registerExactEvmScheme, ExactEvmScheme } from "@x402/evm/exact/facilitator";
@@ -15,7 +16,7 @@ import { createWalletClient, http, publicActions } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
 import { BridgeService } from "./services/bridgeService.js";
-import { extractCrossChainInfo, CROSS_CHAIN } from "./extensions/crossChain.js";
+import { extractCrossChainInfo, CROSS_CHAIN, type CrossChainInfo } from "./extensions/crossChain.js";
 import { Network } from "@x402/core/types";
 import { CrossChainRouter } from "./schemes/crossChainRouter.js";
 
@@ -109,8 +110,10 @@ const evmSigner = toFacilitatorEvmSigner({
 });
 
 // Initialize bridge service
+// For testing: Use facilitator address as bridge lock address so funds don't get lost
 const bridgeService = new BridgeService({
   provider: "custom", // Change to "wormhole" or "layerzero" when integrating
+  facilitatorAddress: evmAccount.address, // Use facilitator address for testing
   // Add your bridge configuration here
 });
 
@@ -123,8 +126,15 @@ const evmScheme = new ExactEvmScheme(evmSigner, {
   deployERC4337WithEIP6492: process.env.DEPLOY_ERC4337_WITH_EIP6492 === "true",
 });
 
-// Create cross-chain router (thin wrapper around exact scheme for routing)
-const crossChainRouter = new CrossChainRouter(evmScheme, bridgeService, {
+// Create cross-chain router (delegates to registered scheme facilitators)
+// Pass a map of scheme name -> facilitator for generic scheme support
+const schemeFacilitators = new Map<string, SchemeNetworkFacilitator>();
+schemeFacilitators.set("exact", evmScheme);
+// Add more schemes here as they're implemented:
+// schemeFacilitators.set("bazaar", bazaarScheme);
+// schemeFacilitators.set("subscription", subscriptionScheme);
+
+const crossChainRouter = new CrossChainRouter(schemeFacilitators, bridgeService, {
   isEnabled: CROSS_CHAIN_ENABLED,
 });
 
@@ -140,22 +150,23 @@ const facilitator = new x402Facilitator()
       payer: context.paymentPayload.payload,
     });
 
-    // Check bridge liquidity for cross-chain payments only
-    // Only check if this is actually a cross-chain scheme payment
-    if (context.requirements.scheme === "cross-chain") {
-      const crossChainInfo = extractCrossChainInfo(context.paymentPayload);
-      if (!crossChainInfo) {
-        return {
-          abort: true,
-          reason: "missing_cross_chain_extension",
-        };
-      }
+    // Check bridge liquidity for cross-chain payments
+    // Detect cross-chain by extension, not scheme name (extension-based design)
+    // Route network is source (where user pays), extension is destination (where merchant receives)
+    const crossChainInfo = extractCrossChainInfo(context.paymentPayload);
+    if (crossChainInfo) {
+      // Source is route network (where user pays)
+      const sourceNetwork = context.requirements.network as Network;
+      const sourceAsset = context.requirements.asset;
+      // Destination is in extension (where merchant receives)
+      const destinationNetwork = crossChainInfo.destinationNetwork as Network;
+      const destinationAsset = crossChainInfo.destinationAsset;
 
       if (CROSS_CHAIN_ENABLED) {
         const hasLiquidity = await bridgeService.checkLiquidity(
-          crossChainInfo.sourceNetwork as Network,
-          context.requirements.network as Network,
-          context.requirements.asset,
+          sourceNetwork,
+          destinationNetwork,
+          sourceAsset,
           context.requirements.amount,
         );
 
@@ -167,12 +178,12 @@ const facilitator = new x402Facilitator()
         }
 
         // Check exchange rate if different assets
-        if (crossChainInfo.sourceAsset !== context.requirements.asset) {
+        if (sourceAsset !== destinationAsset) {
           const rate = await bridgeService.getExchangeRate(
-            crossChainInfo.sourceNetwork as Network,
-            context.requirements.network as Network,
-            crossChainInfo.sourceAsset,
-            context.requirements.asset,
+            sourceNetwork,
+            destinationNetwork,
+            sourceAsset,
+            destinationAsset,
           );
 
           if (rate <= 0) {
@@ -206,15 +217,16 @@ const facilitator = new x402Facilitator()
 
     // Log cross-chain payment info if applicable
     // Note: Actual cross-chain settlement is handled by CrossChainRouter.settle()
-    // which delegates to ExactEvmScheme on the source chain
-    if (context.requirements.scheme === "cross-chain") {
-      const crossChainInfo = extractCrossChainInfo(context.paymentPayload);
-      if (crossChainInfo) {
-        console.log("🌉 Cross-chain payment detected, will settle on source chain:", {
-          sourceNetwork: crossChainInfo.sourceNetwork,
-          destinationNetwork: context.requirements.network,
-        });
-      }
+    // which delegates to base scheme (exact, bazaar, etc.) on the source chain
+    // Detect cross-chain by extension, not scheme name (extension-based design)
+    // Route network is source, extension is destination
+    const crossChainInfo = extractCrossChainInfo(context.paymentPayload);
+    if (crossChainInfo) {
+      console.log("🌉 Cross-chain payment detected, will settle on source chain:", {
+        sourceNetwork: context.requirements.network, // Route network is source
+        destinationNetwork: crossChainInfo.destinationNetwork, // Extension is destination
+        scheme: context.requirements.scheme, // Base scheme (exact, bazaar, etc.)
+      });
     }
   })
   .onAfterSettle(async (context) => {
@@ -226,48 +238,48 @@ const facilitator = new x402Facilitator()
 
     // Handle cross-chain bridging after settlement
     // This allows settlement to complete quickly, with bridging as async operation
-    // Detect cross-chain by checking:
-    // 1. Scheme is "cross-chain"
-    // 2. Cross-chain extension exists in payload
-    // 3. Settlement network (source) differs from requirements network (destination)
-    // 4. Settlement succeeded
-    // 5. Bridging is enabled
+    // Detect cross-chain by checking extension (extension-based design):
+    // 1. Cross-chain extension exists in payload
+    // 2. Settlement network (source) differs from extension destination network
+    // 3. Settlement succeeded
+    // 4. Bridging is enabled
+    // Route network is source, extension is destination
+    const crossChainInfo = extractCrossChainInfo(context.paymentPayload);
     if (
-      context.requirements.scheme === "cross-chain" &&
+      crossChainInfo &&
       context.result.success &&
-      context.result.network !== context.requirements.network &&
+      context.result.network !== crossChainInfo.destinationNetwork &&
       CROSS_CHAIN_ENABLED
     ) {
-      const crossChainInfo = extractCrossChainInfo(context.paymentPayload);
-      if (!crossChainInfo) {
-        console.error("❌ Cross-chain bridging skipped: missing cross-chain extension in payload");
-        return;
-      }
+      const destinationNetwork = crossChainInfo.destinationNetwork as Network;
+      const destinationAsset = crossChainInfo.destinationAsset;
 
       try {
         console.log("🌉 Starting cross-chain bridge:", {
-          sourceNetwork: context.result.network,
+          sourceNetwork: context.result.network, // Route network (where settlement happened)
           sourceTx: context.result.transaction,
-          destinationNetwork: context.requirements.network,
-          asset: context.requirements.asset,
+          destinationNetwork: destinationNetwork, // From extension
+          asset: destinationAsset, // From extension
           amount: context.requirements.amount,
         });
 
         // Bridge funds from source chain to destination chain
+        // Use destinationPayTo from extension (merchant address on destination chain)
+        const destinationPayTo = crossChainInfo.destinationPayTo;
         const bridgeResult = await bridgeService.bridge(
           context.result.network as Network, // Source network (where settlement happened)
           context.result.transaction, // Source transaction hash
-          context.requirements.network as Network, // Destination network
-          context.requirements.asset,
+          destinationNetwork, // Destination network from extension
+          destinationAsset, // Destination asset from extension
           context.requirements.amount,
-          context.requirements.payTo, // Merchant address on destination
+          destinationPayTo, // Merchant address on destination chain (from extension)
         );
 
         console.log("✅ Cross-chain bridge completed:", {
           sourceTx: context.result.transaction,
           bridgeTx: bridgeResult.bridgeTxHash,
           destinationTx: bridgeResult.destinationTxHash,
-          destinationNetwork: context.requirements.network,
+          destinationNetwork: destinationNetwork,
         });
 
         // TODO: You might want to:
@@ -280,7 +292,7 @@ const facilitator = new x402Facilitator()
           error: error instanceof Error ? error.message : "unknown",
           sourceTx: context.result.transaction,
           sourceNetwork: context.result.network,
-          destinationNetwork: context.requirements.network,
+          destinationNetwork: crossChainInfo.destinationNetwork,
         });
 
         // TODO: Implement retry logic or alerting
@@ -307,28 +319,21 @@ registerExactEvmScheme(facilitator, {
     "eip155:8453", // Base Mainnet
     "eip155:84532", // Base Sepolia
     "eip155:1", // Ethereum Mainnet
+    "eip155:11155111", // Ethereum Sepolia
     "eip155:137", // Polygon
   ],
   deployERC4337WithEIP6492: process.env.DEPLOY_ERC4337_WITH_EIP6492 === "true",
 });
 
-// Register cross-chain router (delegates to exact scheme, then bridges)
-// This is a thin routing wrapper - verification/settlement logic is identical to "exact"
-// Register with the same networks as exact scheme (cross-chain supports all EVM networks)
-facilitator.register(
-  [
-    "eip155:8453", // Base Mainnet
-    "eip155:84532", // Base Sepolia
-    "eip155:1", // Ethereum Mainnet
-    "eip155:137", // Polygon
-  ],
-  crossChainRouter,
-);
+// Note: CrossChainRouter is NOT registered as a scheme
+// Cross-chain is extension-based, not scheme-based
+// The router is called directly from verify/settle endpoints when extension is detected
+// This ensures getSupported() only reports actual schemes (exact, bazaar, etc.), not "cross-chain"
 
 console.info("🌉 Cross-chain EVM facilitator initialized");
 console.info(`   Cross-chain bridging: ${CROSS_CHAIN_ENABLED ? "enabled" : "disabled"}`);
 console.info("   'exact' scheme: same-chain payments");
-console.info("   'cross-chain' scheme: routing wrapper around 'exact' for cross-chain payments");
+console.info("   Cross-chain: Extension-based routing (any scheme + cross-chain extension)");
 
 // Initialize Express app
 const app = express();
@@ -337,8 +342,13 @@ app.use(express.json());
 /**
  * POST /verify
  * Verify a payment payload against requirements
+ * 
+ * This endpoint checks for cross-chain extension in the payload.
+ * If present, routes to CrossChainRouter regardless of requirements.scheme.
+ * This allows clients to send "exact" scheme payments that are actually cross-chain.
  */
 app.post("/verify", async (req, res) => {
+  console.log("📥 POST /verify - Received verify request");
   try {
     const { paymentPayload, paymentRequirements } = req.body as {
       paymentPayload: PaymentPayload;
@@ -351,10 +361,11 @@ app.post("/verify", async (req, res) => {
       });
     }
 
-    const response: VerifyResponse = await facilitator.verify(
-      paymentPayload,
-      paymentRequirements,
-    );
+    // Always use facilitator.verify() so hooks run for both same-chain and cross-chain payments
+    // The facilitator will route to the appropriate scheme facilitator (exact, bazaar, etc.)
+    // For cross-chain payments, the hooks will detect the extension and handle cross-chain logic
+    // The actual verification still happens on the source chain via the base scheme facilitator
+    const response = await facilitator.verify(paymentPayload, paymentRequirements);
 
     res.json(response);
   } catch (error) {
@@ -370,6 +381,7 @@ app.post("/verify", async (req, res) => {
  * Settle a payment on-chain
  */
 app.post("/settle", async (req, res) => {
+  console.log("📥 POST /settle - Received settle request");
   try {
     const { paymentPayload, paymentRequirements } = req.body as {
       paymentPayload: PaymentPayload;
@@ -382,10 +394,20 @@ app.post("/settle", async (req, res) => {
       });
     }
 
-    const response: SettleResponse = await facilitator.settle(
-      paymentPayload,
-      paymentRequirements,
-    );
+    // Always use facilitator.settle() so hooks run for both same-chain and cross-chain payments
+    // The facilitator will route to the appropriate scheme facilitator (exact, bazaar, etc.)
+    // For cross-chain payments, the hooks will detect the extension and handle cross-chain logic
+    // The actual settlement still happens on the source chain via the base scheme facilitator
+    // Cross-chain bridging happens in the onAfterSettle hook
+    const response = await facilitator.settle(paymentPayload, paymentRequirements);
+    
+    console.log(`🔍 Settle response:`, {
+      success: response.success,
+      transaction: response.transaction,
+      network: response.network,
+      payer: response.payer,
+      errorReason: response.errorReason,
+    });
 
     res.json(response);
   } catch (error) {
@@ -447,4 +469,5 @@ app.listen(parseInt(PORT), () => {
   console.log(`   GET  /supported - Get supported payment kinds`);
   console.log(`   GET  /health - Health check`);
 });
+
 

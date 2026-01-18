@@ -2,8 +2,8 @@
  * Cross-Chain Extension for x402 v2
  *
  * Enables cross-chain payments where:
- * - User pays on source chain (e.g., Base)
- * - Server receives on destination chain (e.g., Polygon)
+ * - User pays on source chain (specified in route network, e.g., Base)
+ * - Merchant receives on destination chain (specified in extension, e.g., Polygon)
  * - Facilitator bridges funds between chains
  *
  * ## Usage
@@ -13,18 +13,24 @@
  * ```typescript
  * import { declareCrossChainExtension, CROSS_CHAIN } from './extensions/crossChain';
  *
- * const extensions = {
- *   [CROSS_CHAIN]: declareCrossChainExtension(
- *     "eip155:8453",  // Source network (where user pays)
- *     "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" // Source asset (token address)
- *   ),
- * };
- *
- * const paymentRequired = {
- *   x402Version: 2,
- *   resource: { ... },
- *   accepts: [{ scheme: "cross-chain", network: "eip155:137", ... }],
- *   extensions,
+ * // Route: network = source (where user pays)
+ * // Extension: destination (where merchant receives)
+ * const routes = {
+ *   "GET /api/premium": {
+ *     accepts: [{
+ *       scheme: "exact",
+ *       network: "eip155:8453",  // Source (Base - where user pays)
+ *       asset: "0x...", // Source asset
+ *     }],
+ *     extensions: {
+ *       [CROSS_CHAIN]: declareCrossChainExtension({
+ *         destinationNetwork: "eip155:137",  // Destination (Polygon - where merchant receives)
+ *         destinationAsset: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", // Destination asset
+ *         destinationPayTo: "0xMerchantAddress..." // Merchant address on destination chain
+ *       }),
+ *     },
+ *     // Note: payTo in accepts should be facilitator address (where to pay on source chain)
+ *   },
  * };
  * ```
  *
@@ -35,8 +41,9 @@
  *
  * const info = extractCrossChainInfo(paymentPayload);
  * if (info) {
- *   const { sourceNetwork, sourceAsset } = info;
- *   // Use source chain info for verification/settlement
+ *   const { destinationNetwork, destinationAsset } = info;
+ *   // Use destination chain info for bridging
+ *   // Source chain is in paymentPayload.network
  * }
  * ```
  */
@@ -61,20 +68,30 @@ export type JSONSchema = {
 
 /**
  * Cross-chain extension info
- * Contains the source chain information needed for cross-chain payments
+ * Contains the destination chain information for cross-chain payments
+ * 
+ * Note: The route network is the source (where user pays).
+ * The extension specifies the destination (where merchant receives).
  */
 export interface CrossChainInfo {
   /**
-   * Source network in CAIP-2 format (e.g., "eip155:8453" for Base)
-   * This is where the user will pay from
+   * Destination network in CAIP-2 format (e.g., "eip155:137" for Polygon)
+   * This is where the merchant will receive payment
    */
-  sourceNetwork: string;
+  destinationNetwork: string;
 
   /**
-   * Source asset address (e.g., "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" for USDC on Base)
-   * This is the token the user will pay with on the source chain
+   * Destination asset address (e.g., "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359" for USDC on Polygon)
+   * This is the token the merchant will receive on the destination chain
    */
-  sourceAsset: string;
+  destinationAsset: string;
+
+  /**
+   * Destination payTo address (merchant address on destination chain)
+   * This is where the merchant will receive payment after bridging
+   * The facilitator bridges funds to this address on the destination chain
+   */
+  destinationPayTo: string;
 }
 
 /**
@@ -94,47 +111,80 @@ export interface CrossChainExtension {
 }
 
 /**
+ * Parameters for declaring a cross-chain extension
+ */
+export interface CrossChainExtensionParams {
+  /**
+   * CAIP-2 network identifier where merchant receives payment (e.g., "eip155:137" for Polygon)
+   */
+  destinationNetwork: string;
+
+  /**
+   * Token contract address on destination chain (e.g., "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359" for USDC on Polygon)
+   */
+  destinationAsset: string;
+
+  /**
+   * Merchant address on destination chain (where merchant receives payment after bridging)
+   * The facilitator will bridge funds to this address on the destination chain
+   */
+  destinationPayTo: string;
+}
+
+/**
  * Declares a cross-chain extension for a resource server
  *
  * This helper creates a properly formatted extension that can be included
  * in PaymentRequired responses to indicate cross-chain payment support.
  *
- * @param sourceNetwork - CAIP-2 network identifier where user pays (e.g., "eip155:8453")
- * @param sourceAsset - Token contract address on source chain
+ * Note: The route network should be the source (where user pays).
+ * This extension specifies the destination (where merchant receives) and
+ * the source chain payTo address (bridge lock address).
+ *
+ * @param params - Object containing destinationNetwork, destinationAsset, and sourcePayTo
  * @returns CrossChainExtension ready to include in PaymentRequired.extensions
  *
  * @example
  * ```typescript
- * const extension = declareCrossChainExtension(
- *   "eip155:8453",  // Base
- *   "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" // USDC
- * );
+ * // Route: network = source (eip155:8453), asset = source asset, payTo = facilitator address (where to pay on source chain)
+ * // Extension: destinationNetwork = destination (eip155:137), destinationAsset = destination asset
+ * //           destinationPayTo = merchant address (where merchant receives on destination chain)
+ * const extension = declareCrossChainExtension({
+ *   destinationNetwork: "eip155:137",  // Polygon (destination - where merchant receives)
+ *   destinationAsset: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", // USDC on Polygon
+ *   destinationPayTo: "0xMerchantAddress..." // Merchant address on destination chain
+ * });
  * ```
  */
 export function declareCrossChainExtension(
-  sourceNetwork: string,
-  sourceAsset: string,
+  params: CrossChainExtensionParams,
 ): CrossChainExtension {
   return {
     info: {
-      sourceNetwork,
-      sourceAsset,
+      destinationNetwork: params.destinationNetwork,
+      destinationAsset: params.destinationAsset,
+      destinationPayTo: params.destinationPayTo,
     },
     schema: {
       type: "object",
       properties: {
-        sourceNetwork: {
+        destinationNetwork: {
           type: "string",
           pattern: "^eip155:\\d+$", // CAIP-2 format: namespace:reference
-          description: "Source network in CAIP-2 format (e.g., eip155:8453)",
+          description: "Destination network in CAIP-2 format (e.g., eip155:137)",
         },
-        sourceAsset: {
+        destinationAsset: {
           type: "string",
           pattern: "^0x[a-fA-F0-9]{40}$", // Ethereum address format
-          description: "Token contract address on source chain",
+          description: "Token contract address on destination chain",
+        },
+        destinationPayTo: {
+          type: "string",
+          pattern: "^0x[a-fA-F0-9]{40}$", // Ethereum address format
+          description: "Merchant address on destination chain (where merchant receives payment after bridging)",
         },
       },
-      required: ["sourceNetwork", "sourceAsset"],
+      required: ["destinationNetwork", "destinationAsset", "destinationPayTo"],
       additionalProperties: false,
     },
   };
@@ -153,7 +203,7 @@ export function declareCrossChainExtension(
  * ```typescript
  * const info = extractCrossChainInfo(paymentPayload);
  * if (info) {
- *   console.log(`User paying on ${info.sourceNetwork} with ${info.sourceAsset}`);
+ *   console.log(`Merchant receiving on ${info.destinationNetwork} with ${info.destinationAsset}`);
  * }
  * ```
  */
@@ -181,15 +231,18 @@ export function extractCrossChainInfo(
 
   // Validate required fields
   if (
-    typeof info.sourceNetwork === "string" &&
-    typeof info.sourceAsset === "string" &&
-    /^eip155:\d+$/.test(info.sourceNetwork) && // Basic CAIP-2 validation
-    /^0x[a-fA-F0-9]{40}$/.test(info.sourceAsset) // Basic address validation
+    typeof info.destinationNetwork === "string" &&
+    typeof info.destinationAsset === "string" &&
+    typeof info.destinationPayTo === "string" &&
+    /^eip155:\d+$/.test(info.destinationNetwork) && // Basic CAIP-2 validation
+    /^0x[a-fA-F0-9]{40}$/.test(info.destinationAsset) && // Basic address validation
+    /^0x[a-fA-F0-9]{40}$/.test(info.destinationPayTo) // Basic address validation
   ) {
     return {
-      sourceNetwork: info.sourceNetwork,
-      sourceAsset: info.sourceAsset,
-    };
+      destinationNetwork: info.destinationNetwork,
+      destinationAsset: info.destinationAsset,
+      destinationPayTo: info.destinationPayTo,
+    } as CrossChainInfo;
   }
 
   return null;
@@ -220,8 +273,8 @@ export function validateCrossChainExtension(
 
   const info = ext.info as Partial<CrossChainInfo>;
   if (
-    typeof info.sourceNetwork !== "string" ||
-    typeof info.sourceAsset !== "string"
+    typeof info.destinationNetwork !== "string" ||
+    typeof info.destinationAsset !== "string"
   ) {
     return false;
   }
