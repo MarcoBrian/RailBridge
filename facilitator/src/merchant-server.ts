@@ -14,7 +14,6 @@ import { registerExactEvmScheme } from "@x402/evm/exact/server";
 import { createPaywall } from "@x402/paywall";
 import { evmPaywall } from "@x402/paywall/evm";
 import type { AssetAmount } from "@x402/core/types";
-import type { RoutesConfig, RouteConfig } from "@x402/core/http";
 
 // Get directory of current file (for ESM modules)
 const __filename = fileURLToPath(import.meta.url);
@@ -30,6 +29,11 @@ const FACILITATOR_ADDRESS = process.env.FACILITATOR_ADDRESS as `0x${string}` | u
 
 if (!MERCHANT_ADDRESS) {
   console.error("❌ MERCHANT_ADDRESS environment variable is required");
+  process.exit(1);
+}
+
+if (!FACILITATOR_ADDRESS) {
+  console.error("❌ FACILITATOR_ADDRESS environment variable is required");
   process.exit(1);
 }
 
@@ -87,25 +91,6 @@ const facilitatorClient = new LoggingFacilitatorClient({
   url: FACILITATOR_URL,
 });
 
-let facilitatorAddress: string | null = null;
-async function getFacilitatorAddress(): Promise<string | null> {
-  if (facilitatorAddress) return facilitatorAddress;
-  
-  try {
-    const supported = await facilitatorClient.getSupported();
-    const evmSigners = supported.signers["eip155:*"];
-    if (evmSigners && evmSigners.length > 0) {
-      facilitatorAddress = evmSigners[0];
-      console.log(`✅ Facilitator address: ${facilitatorAddress}`);
-      return facilitatorAddress;
-    }
-  } catch (error) {
-    console.warn("⚠️  Could not fetch facilitator address:", error);
-  }
-  
-  return null;
-}
-
 const resourceServer = new x402ResourceServer(facilitatorClient);
 
 // Add logging hooks to trace settlement flow
@@ -157,7 +142,7 @@ const routes = {
             version: "2",
           },
         } as AssetAmount,
-        payTo: FACILITATOR_ADDRESS || "0x0000000000000000000000000000000000000000",
+        payTo: FACILITATOR_ADDRESS,
         extra: {
           description: "Cross-chain payment: Pay on Base Sepolia, receive on Ethereum Sepolia",
         },
@@ -205,58 +190,17 @@ const paywall = createPaywall()
     testnet: true,
   })
   .build();
-
-async function initializeRoutes() {
-  let facilitatorAddr = FACILITATOR_ADDRESS;
-  
-  if (!facilitatorAddr) {
-    const fetchedAddr = await getFacilitatorAddress();
-    if (!fetchedAddr) {
-      console.warn("⚠️  Could not fetch facilitator address. Cross-chain payments may fail.");
-      console.warn("   Set FACILITATOR_ADDRESS in .env to avoid this warning.");
-      return routes;
-    }
-    facilitatorAddr = fetchedAddr as `0x${string}`;
-    console.log(`✅ Fetched facilitator address: ${facilitatorAddr}`);
-  } else {
-    console.log(`✅ Using facilitator address from env: ${facilitatorAddr}`);
-  }
-
-  const transformedRoutes = JSON.parse(JSON.stringify(routes)) as RoutesConfig;
-  
-  if (typeof transformedRoutes === "object" && !Array.isArray(transformedRoutes)) {
-    for (const [routeKey, routeConfig] of Object.entries(transformedRoutes)) {
-      const config = routeConfig as RouteConfig;
-      if (config.extensions?.[CROSS_CHAIN]) {
-        if (config.accepts) {
-          const accepts = Array.isArray(config.accepts) ? config.accepts : [config.accepts];
-          for (const accept of accepts) {
-            if (!accept.payTo || accept.payTo === "0x0000000000000000000000000000000000000000") {
-              accept.payTo = facilitatorAddr as `0x${string}`;
-              console.log(`✅ Updated ${routeKey}: payTo = ${facilitatorAddr}`);
-            }
-          }
-        }
-      }
-    }
-  }
-  
-  return transformedRoutes;
-}
-
-async function startServer() {
-  const finalRoutes = await initializeRoutes();
-
-  console.log("🔍 Routes being passed to middleware:", JSON.stringify(finalRoutes, null, 2));
-  console.log("🔍 Route keys:", Object.keys(finalRoutes));
+function startServer() {
+  console.log("🔍 Routes being passed to middleware:", JSON.stringify(routes, null, 2));
+  console.log("🔍 Route keys:", Object.keys(routes));
 
   try {
   // Create payment middleware
   const baseMiddleware = paymentMiddleware(
-    finalRoutes,
+    routes,
     resourceServer,
     undefined,
-    paywall,
+    paywall, //Optional to include paywall 
     true,
   );
 
@@ -351,10 +295,7 @@ async function startServer() {
   });
 }
 
-startServer().catch((error) => {
-  console.error("❌ Failed to start server:", error);
-  process.exit(1);
-});
+startServer();
 
 process.on("unhandledRejection", (reason: unknown, promise: Promise<unknown>) => {
   console.error("❌ Unhandled Rejection at:", promise, "reason:", reason);

@@ -5,7 +5,7 @@ A cross-chain payment facilitator for the x402 protocol, enabling payments where
 ## Features
 
 - **Multi-chain support**: EVM (Base, Base Sepolia, Ethereum, Polygon)
-- **Cross-chain payments**: Pay on one EVM chain, receive on another (via `cross-chain` scheme)
+- **Cross-chain payments**: Pay on one EVM chain, receive on another (via `cross-chain` extension on the `exact` scheme)
 - **Secure verification**: Reuses Coinbase's `@x402/core` and `@x402/evm` implementations
 - **Easy integration**: Standard x402 protocol endpoints; plug-and-play for merchants
 
@@ -32,10 +32,10 @@ npm install
 
 ### 2. Configure Environment
 
-Copy `.env.example` to `.env` and fill in your configuration:
+Copy `.env.template` to `.env` and fill in your configuration:
 
 ```bash
-cp .env.example .env
+cp .env.template .env
 ```
 
 Required variables:
@@ -56,7 +56,9 @@ npm run build
 npm start
 ```
 
-## API Endpoints (Facilitator)
+## Facilitator API Endpoints
+
+The RailBridge Facilitator is a service that handles payment verification, on-chain settlement, and cross-chain bridging for x402 payments. It verifies payment signatures, settles transactions on the source chain, and automatically bridges funds to the destination chain when cross-chain payments are required.
 
 ### POST /verify
 
@@ -144,19 +146,7 @@ Get list of supported payment schemes, networks, and extensions.
       "network": "eip155:11155111"
     }
   ],
-  "extensions": [
-    {
-      "key": "cross-chain",
-      "schema": {
-        "type": "object",
-        "properties": {
-          "destinationNetwork": { "type": "string" },
-          "destinationAsset": { "type": "string" },
-          "destinationPayTo": { "type": "string" }
-        }
-      }
-    }
-  ],
+  "extensions": ["cross-chain"],
   "signers": {
     "eip155:*": ["0xFacilitatorSignerAddress"]
   }
@@ -223,7 +213,7 @@ Merchants integrate with RailBridge by:
 ### Step 1: Install Dependencies
 
 ```bash
-npm install @x402/express @x402/core @x402/evm
+npm install @x402/express @x402/core @x402/evm @x402/paywall
 ```
 
 ### Step 2: Same-Chain Payment Setup
@@ -231,14 +221,24 @@ npm install @x402/express @x402/core @x402/evm
 For same-chain payments (user and merchant on the same chain):
 
 ```ts
+import dotenv from "dotenv";
 import express from "express";
 import { paymentMiddleware } from "@x402/express";
 import { x402ResourceServer } from "@x402/core/server";
 import { HTTPFacilitatorClient } from "@x402/core/http";
 import { registerExactEvmScheme } from "@x402/evm/exact/server";
+import { createPaywall } from "@x402/paywall";
+import { evmPaywall } from "@x402/paywall/evm";
+
+dotenv.config();
 
 const FACILITATOR_URL = process.env.FACILITATOR_URL || "http://localhost:4022";
 const MERCHANT_ADDRESS = process.env.MERCHANT_ADDRESS as `0x${string}`;
+
+if (!MERCHANT_ADDRESS) {
+  console.error("❌ MERCHANT_ADDRESS environment variable is required");
+  process.exit(1);
+}
 
 const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL });
 const resourceServer = new x402ResourceServer(facilitatorClient);
@@ -246,6 +246,15 @@ const resourceServer = new x402ResourceServer(facilitatorClient);
 registerExactEvmScheme(resourceServer, {
   networks: ["eip155:84532", "eip155:8453"], // Base Sepolia, Base Mainnet
 });
+
+// Create paywall for browser requests
+const paywall = createPaywall()
+  .withNetwork(evmPaywall)
+  .withConfig({
+    appName: "RailBridge Merchant",
+    testnet: true,
+  })
+  .build();
 
 const routes = {
   "GET /api/premium": {
@@ -264,8 +273,19 @@ const routes = {
 
 const app = express();
 app.use(express.json());
-app.use(paymentMiddleware(routes, resourceServer));
 
+// Register payment middleware (with paywall for browser requests)
+app.use(
+  paymentMiddleware(
+    routes,
+    resourceServer,
+    undefined, // paywallConfig (optional)
+    paywall, // paywall provider
+    true, // syncFacilitatorOnStart
+  ),
+);
+
+// Register route handler AFTER middleware
 app.get("/api/premium", (req, res) => {
   res.json({ message: "Premium content", ts: Date.now() });
 });
@@ -280,85 +300,120 @@ app.listen(4021, () => {
 For cross-chain payments (user pays on source chain, merchant receives on destination chain):
 
 ```ts
+import dotenv from "dotenv";
 import express from "express";
 import { paymentMiddleware } from "@x402/express";
 import { x402ResourceServer } from "@x402/core/server";
 import { HTTPFacilitatorClient } from "@x402/core/http";
 import { registerExactEvmScheme } from "@x402/evm/exact/server";
+import { createPaywall } from "@x402/paywall";
+import { evmPaywall } from "@x402/paywall/evm";
 import { declareCrossChainExtension, CROSS_CHAIN } from "./extensions/crossChain";
 import type { AssetAmount } from "@x402/core/types";
 
-const FACILITATOR_URL = process.env.FACILITATOR_URL || "http://localhost:4022";
-const FACILITATOR_ADDRESS = process.env.FACILITATOR_ADDRESS as `0x${string}`;
-const MERCHANT_ADDRESS = process.env.MERCHANT_ADDRESS as `0x${string}`;
+dotenv.config();
 
+const FACILITATOR_URL = process.env.FACILITATOR_URL || "http://localhost:4022";
+const FACILITATOR_ADDRESS = process.env.FACILITATOR_ADDRESS as `0x${string}` | undefined;
+const MERCHANT_ADDRESS = process.env.MERCHANT_ADDRESS as `0x${string}` | undefined;
+
+if (!MERCHANT_ADDRESS) {
+  console.error("❌ MERCHANT_ADDRESS environment variable is required");
+  process.exit(1);
+}
+if (!FACILITATOR_ADDRESS) {
+  console.error("❌ FACILITATOR_ADDRESS environment variable is required");
+  process.exit(1);
+}
+
+// Create facilitator client and resource server
 const facilitatorClient = new HTTPFacilitatorClient({ url: FACILITATOR_URL });
 const resourceServer = new x402ResourceServer(facilitatorClient);
 
 registerExactEvmScheme(resourceServer, {
-  networks: ["eip155:84532", "eip155:11155111"], // Base Sepolia, Ethereum Sepolia
+  networks: [
+    "eip155:84532", // Base Sepolia
+    "eip155:11155111", // Ethereum Sepolia
+  ],
 });
 
-// Initialize routes with facilitator address
-async function initializeRoutes() {
-  let facilitatorAddr = FACILITATOR_ADDRESS;
-  
-  // Fetch facilitator address if not set
-  if (!facilitatorAddr) {
-    const supported = await facilitatorClient.getSupported();
-    const evmSigners = supported.signers["eip155:*"];
-    if (evmSigners && evmSigners.length > 0) {
-      facilitatorAddr = evmSigners[0] as `0x${string}`;
-    }
-  }
-
-  return {
-    "GET /api/premium": {
-      accepts: [
-        {
-          scheme: "exact" as const,
-          network: "eip155:84532" as const, // Source chain (where user pays)
-          price: {
-            asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // USDC on Base Sepolia
-            amount: "10000", // Amount in atomic units (6 decimals for USDC)
-            extra: {
-              name: "USDC",
-              version: "2",
-            },
-          } as AssetAmount,
-          payTo: facilitatorAddr, // Facilitator address (where user pays on source chain)
+const routes = {
+  "GET /api/premium": {
+    accepts: [
+      {
+        scheme: "exact" as const,
+        network: "eip155:84532" as const, // Source chain (where user pays)
+        price: {
+          asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // USDC on Base Sepolia
+          amount: "10000", // Amount in atomic units (6 decimals for USDC)
+          extra: {
+            name: "USDC",
+            version: "2",
+          },
+        } as AssetAmount,
+        payTo: FACILITATOR_ADDRESS, // Facilitator address on source chain
+        extra: {
+          description: "Cross-chain payment: Pay on Base Sepolia, receive on Ethereum Sepolia",
         },
-      ],
-      description: "Premium API endpoint",
-      mimeType: "application/json",
-      extensions: {
-        [CROSS_CHAIN]: declareCrossChainExtension({
-          destinationNetwork: "eip155:11155111", // Ethereum Sepolia (where merchant receives)
-          destinationAsset: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", // USDC on Ethereum Sepolia
-          destinationPayTo: MERCHANT_ADDRESS, // Merchant address on destination chain
-        }),
       },
+    ],
+    description: "Premium API endpoint",
+    mimeType: "application/json",
+    extensions: {
+      [CROSS_CHAIN]: declareCrossChainExtension({
+        destinationNetwork: "eip155:11155111", // Ethereum Sepolia (where merchant receives)
+        destinationAsset: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238", // USDC on Ethereum Sepolia
+        destinationPayTo: MERCHANT_ADDRESS, // Merchant address on destination chain
+      }),
     },
-  };
-}
+  },
+};
 
-async function startServer() {
-  const routes = await initializeRoutes();
-  
+// Create paywall for browser requests
+const paywall = createPaywall()
+  .withNetwork(evmPaywall)
+  .withConfig({
+    appName: "RailBridge Merchant",
+    testnet: true,
+  })
+  .build();
+
+// Start server
+function startServer() {
   const app = express();
   app.use(express.json());
-  app.use(paymentMiddleware(routes, resourceServer));
-  
+
+  // Register payment middleware (with paywall for browser requests)
+  app.use(
+    paymentMiddleware(
+      routes,
+      resourceServer,
+      undefined, // paywallConfig (optional)
+      paywall, // paywall provider
+      true, // syncFacilitatorOnStart
+    ),
+  );
+
+  // Register route handler AFTER middleware (important for Express middleware order)
   app.get("/api/premium", (req, res) => {
     res.json({ message: "Premium content", ts: Date.now() });
   });
-  
-  app.listen(4021, () => {
-    console.log("🛒 Merchant server on http://localhost:4021");
+
+  // Error handler
+  app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error("Error:", err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  const PORT = process.env.MERCHANT_PORT || "4021";
+  app.listen(parseInt(PORT), () => {
+    console.log(`🛒 Merchant server on http://localhost:${PORT}`);
   });
 }
 
-startServer().catch(console.error);
+startServer();
 ```
 
 ### Key Points for Cross-Chain Setup
@@ -369,7 +424,6 @@ startServer().catch(console.error);
    - `destinationNetwork`: Chain where merchant receives
    - `destinationAsset`: Token address on destination chain
    - `destinationPayTo`: Merchant address on destination chain
-4. **Async Initialization**: Use `async` function to fetch facilitator address if needed
 
 ### Environment Variables
 
@@ -377,8 +431,6 @@ startServer().catch(console.error);
 # Required
 FACILITATOR_URL=http://localhost:4022
 MERCHANT_ADDRESS=0xYourMerchantAddressOnDestinationChain
-
-# Optional (will be fetched if not set)
 FACILITATOR_ADDRESS=0xFacilitatorAddressOnSourceChain
 ```
 
