@@ -56,6 +56,74 @@ npm run build
 npm start
 ```
 
+### 4. Example Implementations
+
+- **Facilitator server**: `src/facilitator-implementation.ts`  
+  Runs the RailBridge cross-chain x402 facilitator (`/verify`, `/settle`, `/supported`, `/health`).
+
+- **Merchant servers**:
+  - `src/merchant-server-same-chain.ts` – example merchant that only accepts same-chain payments.
+  - `src/merchant-server.ts` – example merchant that accepts cross-chain payments (Base Sepolia → Ethereum Sepolia).
+
+- **Client example**: `src/client-example.ts`  
+  Demonstrates how a client/wallet uses `@x402/core`, `@x402/evm`, and `@x402/fetch` to pay a protected route.
+
+## Quickstart
+
+### 1. Run the Facilitator
+
+- From the `facilitator` directory:
+
+```bash
+npm install
+cp env.template .env
+# edit .env to set EVM_PRIVATE_KEY, EVM_RPC_URL, etc.
+npm run dev
+```
+
+This starts the RailBridge facilitator on port `4022` with:
+- `POST /verify`
+- `POST /settle`
+- `GET  /supported`
+- `GET  /health`
+
+### 2. Run a Merchant Server
+
+In a separate terminal:
+
+```bash
+cd facilitator
+cp env.template .env.merchant
+# edit .env.merchant to set:
+# - FACILITATOR_URL=http://localhost:4022
+# - MERCHANT_ADDRESS=0xYourMerchantAddress
+# - FACILITATOR_ADDRESS=0xFacilitatorLockAddressOnSourceChain
+
+NODE_ENV=development MERCHANT_PORT=4021 ts-node src/merchant-server.ts
+```
+
+- Use `src/merchant-server-same-chain.ts` instead if you only want same-chain payments.
+
+### 3. Run the Client Example
+
+In another terminal:
+
+```bash
+cd facilitator
+cp env.template .env.client
+# edit .env.client to set:
+# - CLIENT_PRIVATE_KEY=0xYourClientPrivateKey
+# - MERCHANT_URL=http://localhost:4021
+
+npm run example:client
+```
+
+The client will:
+- Fetch the protected route from the merchant.
+- Automatically construct and sign a payment (using `exact` EVM scheme).
+- Send the signed `paymentPayload` to the merchant, which calls the facilitator.
+- Log the payment result and the `PAYMENT-RESPONSE` header (including transaction hash).
+
 ## Facilitator API Endpoints
 
 The RailBridge Facilitator is a service that handles payment verification, on-chain settlement, and cross-chain bridging for x402 payments. It verifies payment signatures, settles transactions on the source chain, and automatically bridges funds to the destination chain when cross-chain payments are required.
