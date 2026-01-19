@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import "./globals.css";
 
 // Simple Chain Badge (text-based so you can swap easily)
 function ChainBadge({ label, darkMode }: { label: string; darkMode: boolean }) {
@@ -131,18 +130,47 @@ function ChainSlides({ darkMode }: { darkMode: boolean }) {
   );
 }
 
-function Section({ id, title, subtitle, children, darkMode }: any) {
+function Section({ id, title, subtitle, children, darkMode, inverted = false }: any) {
+  const sectionColors = inverted
+    ? darkMode
+      ? "bg-white text-black"
+      : "bg-black text-white"
+    : "";
+
   return (
-    <section id={id} className="relative py-20 sm:py-28">
+    <section
+      id={id}
+      className={`relative py-20 sm:py-28 transition-colors ${sectionColors}`}
+    >
       <div className="max-w-6xl mx-auto px-6">
         <div className="mb-8">
-          <h2 className={`text-2xl sm:text-3xl md:text-4xl font-semibold ${
-            darkMode ? "text-white" : "text-black"
-          }`}>{title}</h2>
+          <h2
+            className={`text-2xl sm:text-3xl md:text-4xl font-semibold ${
+              inverted
+                ? darkMode
+                  ? "text-black"
+                  : "text-white"
+                : darkMode
+                  ? "text-white"
+                  : "text-black"
+            }`}
+          >
+            {title}
+          </h2>
           {subtitle && (
-            <p className={`mt-3 max-w-3xl ${
-              darkMode ? "text-white/70" : "text-black/70"
-            }`}>{subtitle}</p>
+            <p
+              className={`mt-3 max-w-3xl ${
+                inverted
+                  ? darkMode
+                    ? "text-black/70"
+                    : "text-white/70"
+                  : darkMode
+                    ? "text-white/70"
+                    : "text-black/70"
+              }`}
+            >
+              {subtitle}
+            </p>
           )}
         </div>
         {children}
@@ -191,12 +219,7 @@ export default function Page() {
               <a href="#problem" className={darkMode ? "hover:text-white" : "hover:text-black"}>Problem</a>
               <a href="#solution" className={darkMode ? "hover:text-white" : "hover:text-black"}>Solution</a>
               <a href="#how" className={darkMode ? "hover:text-white" : "hover:text-black"}>How it Works</a>
-              <a href="#ecosystem" className={darkMode ? "hover:text-white" : "hover:text-black"}>Ecosystem</a>
-              <a href="#docs" className={`px-3 py-1.5 rounded-md border transition-colors ${
-                darkMode 
-                  ? "bg-white/10 border-white/30 hover:bg-white/20 text-white" 
-                  : "bg-black/10 border-black/30 hover:bg-black/20 text-black"
-              }`}>Docs</a>
+              <a href="https://railbridge.gitbook.io/docs" target="_blank" rel="noopener noreferrer" className={darkMode ? "hover:text-white" : "hover:text-black"}>Docs</a>
             </nav>
             <button
               onClick={() => setDarkMode(!darkMode)}
@@ -249,7 +272,7 @@ export default function Page() {
       </header>
 
       {/* Hero */}
-      <section className="relative overflow-hidden min-h-[600px] sm:min-h-[650px]">
+      <section className="relative overflow-hidden min-h-[calc(100vh-3.5rem)]">
         {/* Background gradient */}
         <div className={`absolute inset-0 -z-10 transition-colors ${
           darkMode 
@@ -260,32 +283,22 @@ export default function Page() {
         <div className="max-w-6xl mx-auto px-6 pt-16 pb-28 sm:pt-24 sm:pb-36 md:pb-32">
           <div className="grid md:grid-cols-2 gap-10 items-center">
             <div>
-              <div className={`inline-flex items-center gap-2 text-xs px-2 py-1 rounded-full border mb-4 transition-colors ${
-                darkMode 
-                  ? "border-white/30 bg-white/5" 
-                  : "border-black/30 bg-black/5"
-              }`}>
-                <span className={`size-1.5 rounded-full transition-colors ${
-                  darkMode ? "bg-white" : "bg-black"
-                }`} />
-                Interoperability for x402
-              </div>
               <h1 className="text-3xl sm:text-5xl md:text-6xl font-semibold leading-tight">
-                The <span className={darkMode ? "text-white" : "text-black"}>Interoperability</span> Layer for x402
+                The <span className={darkMode ? "text-white" : "text-black"}>Interoperability</span> Layer for Agentic Commerce
               </h1>
               <p className={`mt-5 max-w-xl transition-colors ${
                 darkMode ? "text-white/70" : "text-black/70"
               }`}>
                 Enable truly cross-chain micropayments so users and agents can pay with any token, on any chain,
-                while services receive seamlessly where they are.
+                while services receive seamlessly where they prefer.
               </p>
               <div className="mt-7 flex flex-wrap gap-3">
-                <a href="#docs" className={`px-4 py-2.5 rounded-xl font-medium transition-colors ${
+                <a href="https://railbridge.gitbook.io/docs" target="_blank" rel="noopener noreferrer" className={`px-4 py-2.5 font-medium transition-colors ${
                   darkMode 
                     ? "bg-white hover:bg-white/90 text-black" 
                     : "bg-black hover:bg-black/90 text-white"
-                }`}>Read Whitepaper</a>
-                <a href="#join" className={`px-4 py-2.5 rounded-xl border transition-colors ${
+                }`}>Read Docs </a>
+                <a href="#join" className={`px-4 py-2.5 border transition-colors ${
                   darkMode 
                     ? "border-white/30 hover:bg-white/10" 
                     : "border-black/30 hover:bg-black/10"
@@ -306,6 +319,7 @@ export default function Page() {
         title="The Multi‑Chain Payment Problem"
         subtitle="Payments are siloed within single chains. Even with x402 enabling agentic micropayments, there is no seamless, trustless way to pay on one chain and settle on another."
         darkMode={darkMode}
+        inverted
       >
         <div className="grid md:grid-cols-3 gap-6">
           {[{
@@ -318,17 +332,28 @@ export default function Page() {
             h: "Stalled Agentic UX",
             p: "AI agents can initiate payments, but not seamlessly across networks; cross‑chain subscriptions and pay‑per‑use remain clunky.",
           }].map((card, i) => (
-            <div key={i} className={`rounded-2xl border p-5 transition-colors ${
-              darkMode 
-                ? "border-white/20 bg-white/[0.02]" 
-                : "border-black/20 bg-black/[0.02]"
-            }`}>
-              <h3 className={`text-lg font-medium transition-colors ${
-                darkMode ? "text-white" : "text-black"
-              }`}>{card.h}</h3>
-              <p className={`mt-2 text-sm transition-colors ${
-                darkMode ? "text-white/70" : "text-black/70"
-              }`}>{card.p}</p>
+            <div
+              key={i}
+              className={`rounded-2xl border p-5 transition-colors ${
+                darkMode
+                  ? "border-black/30 bg-black/10"
+                  : "border-white/30 bg-white/10"
+              }`}
+            >
+              <h3
+                className={`text-lg font-medium transition-colors ${
+                  darkMode ? "text-black" : "text-white"
+                }`}
+              >
+                {card.h}
+              </h3>
+              <p
+                className={`mt-2 text-sm transition-colors ${
+                  darkMode ? "text-black/70" : "text-white/70"
+                }`}
+              >
+                {card.p}
+              </p>
             </div>
           ))}
         </div>
@@ -373,7 +398,7 @@ export default function Page() {
       </Section>
 
       {/* How it works */}
-      <Section id="how" title="How It Works" darkMode={darkMode}>
+      <Section id="how" title="How It Works" darkMode={darkMode} inverted>
         <div className="grid md:grid-cols-3 gap-6">
           {[{
             h: "Send",
@@ -385,17 +410,28 @@ export default function Page() {
             h: "Settle",
             p: "Funds land on the destination chain; service unlocks resource.",
           }].map((s, i) => (
-            <div key={i} className={`rounded-2xl border p-5 transition-colors ${
-              darkMode 
-                ? "border-white/20 bg-white/[0.02]" 
-                : "border-black/20 bg-black/[0.02]"
-            }`}>
-              <h3 className={`text-lg font-medium transition-colors ${
-                darkMode ? "text-white" : "text-black"
-              }`}>{s.h}</h3>
-              <p className={`mt-2 text-sm transition-colors ${
-                darkMode ? "text-white/70" : "text-black/70"
-              }`}>{s.p}</p>
+            <div
+              key={i}
+              className={`rounded-2xl border p-5 transition-colors ${
+                darkMode
+                  ? "border-black/30 bg-black/10"
+                  : "border-white/30 bg-white/10"
+              }`}
+            >
+              <h3
+                className={`text-lg font-medium transition-colors ${
+                  darkMode ? "text-black" : "text-white"
+                }`}
+              >
+                {s.h}
+              </h3>
+              <p
+                className={`mt-2 text-sm transition-colors ${
+                  darkMode ? "text-black/70" : "text-white/70"
+                }`}
+              >
+                {s.p}
+              </p>
             </div>
           ))}
         </div>
@@ -421,7 +457,7 @@ export default function Page() {
         <div className={`flex flex-wrap gap-3 text-xs transition-colors ${
           darkMode ? "text-white/80" : "text-black/80"
         }`}>
-          {["x402","Polkadot","Hyperbridge","Base","Arbitrum","Optimism","Ethereum","Polygon","Solana","BSC","Avalanche","Tron","Gnosis","Sonic","Story","Monad"].map((e, i) => (
+          {["x402","Polkadot","Base","Arbitrum","Optimism","Ethereum","Polygon","Solana","BSC","Avalanche","Tron","Gnosis","Sonic","Story","Monad"].map((e, i) => (
             <ChainBadge key={i} label={e} darkMode={darkMode} />
           ))}
         </div>
@@ -430,12 +466,12 @@ export default function Page() {
       {/* CTA */}
       <Section id="join" title="Build with RailBridge AI" subtitle="Join the early builder cohort and help shape the cross‑chain agentic economy." darkMode={darkMode}>
         <div className="flex flex-wrap gap-3">
-          <a href="#docs" className={`px-4 py-2.5 rounded-xl font-medium transition-colors ${
+          <a href="#docs" className={`px-4 py-2.5 font-medium transition-colors ${
             darkMode 
               ? "bg-white hover:bg-white/90 text-black" 
               : "bg-black hover:bg-black/90 text-white"
           }`}>Get Started</a>
-          <a href="#contact" className={`px-4 py-2.5 rounded-xl border transition-colors ${
+          <a href="#contact" className={`px-4 py-2.5 border transition-colors ${
             darkMode 
               ? "border-white/30 hover:bg-white/10" 
               : "border-black/30 hover:bg-black/10"

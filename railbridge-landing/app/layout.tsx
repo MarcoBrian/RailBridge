@@ -1,3 +1,5 @@
+import "./globals.css";
+
 export const metadata = {
   title: "RailBridge AI — Interoperability Layer for x402",
   description: "Cross-chain micropayments so agents and users can pay with any token, on any chain.",
