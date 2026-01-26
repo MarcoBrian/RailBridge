@@ -298,11 +298,11 @@ export default function Page() {
                     ? "bg-white hover:bg-white/90 text-black" 
                     : "bg-black hover:bg-black/90 text-white"
                 }`}>Read Docs </a>
-                <a href="#join" className={`px-4 py-2.5 border transition-colors ${
+                <a href="https://tally.so/r/PdzO01" target="_blank" rel="noopener noreferrer" className={`px-4 py-2.5 border transition-colors ${
                   darkMode 
                     ? "border-white/30 hover:bg-white/10" 
                     : "border-black/30 hover:bg-black/10"
-                }`}>Join Testnet</a>
+                }`}>Join Waitlist</a>
               </div>
             </div>
 
@@ -466,12 +466,12 @@ export default function Page() {
       {/* CTA */}
       <Section id="join" title="Build with RailBridge AI" subtitle="Join the early builder cohort and help shape the cross‑chain agentic economy." darkMode={darkMode}>
         <div className="flex flex-wrap gap-3">
-          <a href="#docs" className={`px-4 py-2.5 font-medium transition-colors ${
+          <a href="https://railbridge.gitbook.io/docs" target="_blank" rel="noopener noreferrer" className={`px-4 py-2.5 font-medium transition-colors ${
             darkMode 
               ? "bg-white hover:bg-white/90 text-black" 
               : "bg-black hover:bg-black/90 text-white"
           }`}>Get Started</a>
-          <a href="#contact" className={`px-4 py-2.5 border transition-colors ${
+          <a href="mailto:railbridge.ai@proton.me" className={`px-4 py-2.5 border transition-colors ${
             darkMode 
               ? "border-white/30 hover:bg-white/10" 
               : "border-black/30 hover:bg-black/10"
