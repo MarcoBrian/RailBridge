@@ -3,6 +3,7 @@ import type {
   BridgeLiquidityCheck,
   ExchangeRate,
   BridgeResult,
+  IBridgeService,
 } from "../types/bridge.js";
 import { Network } from "@x402/core/types";
 
@@ -12,7 +13,7 @@ import { Network } from "@x402/core/types";
  * This is a stub implementation. You'll need to integrate with your actual
  * bridge provider (Wormhole, LayerZero, or custom RailBridge bridge).
  */
-export class BridgeService {
+export class BridgeService implements IBridgeService {
   private config: BridgeConfig;
 
   constructor(config: BridgeConfig) {

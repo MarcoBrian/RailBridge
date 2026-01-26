@@ -12,7 +12,7 @@
 
 import { SchemeNetworkFacilitator } from "@x402/core/types";
 import { PaymentPayload, PaymentRequirements, Network, VerifyResponse, SettleResponse } from "@x402/core/types";
-import { BridgeService } from "../services/bridgeService.js";
+import type { IBridgeService } from "../types/bridge.js";
 import { extractCrossChainInfo, type CrossChainInfo } from "../extensions/crossChain.js";
 
 export interface CrossChainRouterConfig {
@@ -37,7 +37,7 @@ export class CrossChainRouter implements SchemeNetworkFacilitator {
      * Used to look up the appropriate facilitator based on requirements.scheme
      */
     private schemeFacilitators: Map<string, SchemeNetworkFacilitator>,
-    private bridgeService: BridgeService,
+    private bridgeService: IBridgeService,
     config?: CrossChainRouterConfig,
   ) {
     this.isEnabled = config?.isEnabled ?? true;

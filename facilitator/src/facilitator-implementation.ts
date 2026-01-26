@@ -16,6 +16,7 @@ import { createWalletClient, http, publicActions } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
 import { BridgeService } from "./services/bridgeService.js";
+import { CircleCCTPBridgeService } from "./services/circleCCTPBridgeService.js";
 import { extractCrossChainInfo, CROSS_CHAIN, type CrossChainInfo } from "./extensions/crossChain.js";
 import { Network } from "@x402/core/types";
 import { CrossChainRouter } from "./schemes/crossChainRouter.js";
@@ -110,11 +111,10 @@ const evmSigner = toFacilitatorEvmSigner({
 });
 
 // Initialize bridge service
-// For testing: Use facilitator address as bridge lock address so funds don't get lost
-const bridgeService = new BridgeService({
-  provider: "custom", // Change to "wormhole" or "layerzero" when integrating
-  facilitatorAddress: evmAccount.address, // Use facilitator address for testing
-  // Add your bridge configuration here
+// Use Circle CCTP for USDC cross-chain transfers
+const bridgeService = new CircleCCTPBridgeService({
+  provider: "cctp",
+  facilitatorAddress: evmAccount.address,
 });
 
 // Cross-chain bridging configuration

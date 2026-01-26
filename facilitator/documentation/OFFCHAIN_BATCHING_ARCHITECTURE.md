@@ -4,6 +4,14 @@
 
 This document describes the architecture for handling cross-chain payments in the RailBridge facilitator using an **offchain batching model**. This approach solves the economic problem where individual microtransactions (e.g., $0.01) would be uneconomical to bridge individually due to cross-chain gas fees (e.g., $1 per bridge).
 
+### MVP Implementation: Circle CCTP for USDC
+
+**For MVP**, this architecture is implemented using **Circle's Cross-Chain Transfer Protocol (CCTP)** for USDC transfers:
+- ✅ **USDC-only**: MVP focuses on USDC cross-chain payments
+- ✅ **Testnet support**: CCTP available on Sepolia and other testnets for development
+- ✅ **Simplified**: Burn-and-mint model means no liquidity checks needed
+- ✅ **Future expansion**: Architecture supports adding other bridge providers (Wormhole, deBridge, etc.) for non-USDC tokens
+
 Instead of bridging each payment immediately, the facilitator:
 1. **Settles every payment on the source chain** (trustless, on-chain)
 2. **Tracks pending balances in an offchain ledger** (per merchant, per route)
@@ -168,11 +176,22 @@ Stored in DB or config:
 
 **Purpose**: Your existing `BridgeService` interface, but now called by rebalancer instead of hooks.
 
-#### Interface (No Changes)
+#### Interface
 
 - `bridge(sourceChain, sourceTxHash, destChain, asset, amount, recipient)` - Execute bridge
 - `checkLiquidity(sourceChain, destChain, asset, amount)` - Check if bridgeable
 - `getExchangeRate(sourceChain, destChain, sourceAsset, destAsset)` - Get rate
+
+#### MVP Implementation: Circle CCTP
+
+**For USDC with Circle CCTP**, the implementation simplifies:
+
+- **`checkLiquidity()`**: Always returns `true` for USDC (burn-and-mint model, no liquidity pools needed)
+- **`getExchangeRate()`**: Always returns `1.0` for USDC (1:1 rate guaranteed)
+- **`bridge()`**: Implements CCTP burn-and-mint flow:
+  1. Burn USDC on source chain via CCTP contract
+  2. Wait for Circle attestation
+  3. Mint USDC on destination chain to recipient
 
 #### Usage Pattern Changes
 
@@ -181,8 +200,24 @@ Stored in DB or config:
 
 #### Optional Additional Methods
 
-- `estimateBridgeFee(amount)` - For policy checks
-- `getBridgeStatus(bridgeTxHash)` - For tracking bridge completion
+- `estimateBridgeFee(amount)` - For policy checks (CCTP fees are typically low and predictable)
+- `getBridgeStatus(bridgeTxHash)` - For tracking bridge completion (CCTP attestation status)
+
+#### Future Expansion
+
+When adding support for other tokens (non-USDC), implement additional bridge providers:
+- **Wormhole**: For general token bridging
+- **deBridge**: For native-asset orders with 0-TVL model
+- **LayerZero**: For messaging and composable cross-chain flows
+
+The `BridgeService` abstraction allows routing based on asset type:
+```typescript
+if (asset === USDC && destAsset === USDC) {
+  return circleCCTP.bridge(...);
+} else {
+  return wormholeBridge.bridge(...);
+}
+```
 
 ---
 
@@ -214,11 +249,13 @@ Stored in DB or config:
 }
 ```
 
-**Bridge Events**:
+**Bridge Events** (CCTP-specific):
 ```json
 {
   "type": "bridge_initiated",
   "sourceTx": "0x...",
+  "burnTx": "0x...",
+  "attestationMessage": "0x...",
   "destTx": "0x...",
   "amount": "50000",
   "merchant": "0x...",
@@ -230,7 +267,7 @@ Stored in DB or config:
 ```json
 {
   "type": "bridge_failed",
-  "error": "insufficient_liquidity",
+  "error": "attestation_timeout",
   "retryCount": 3,
   "ledgerKey": "...",
   "timestamp": "2024-01-01T00:00:00Z"
@@ -307,10 +344,11 @@ Could charge a fee for this premium feature.
 - Fallback: Log to file, reconcile later
 - Worst case: Fall back to immediate bridge (better than losing payment)
 
-**Bridge Fails** (deBridge API down, insufficient liquidity):
+**Bridge Fails** (CCTP attestation service down, network issues):
 - Mark ledger entry with `lastError` and `retryAfter` timestamp
 - Rebalancer retries on next cycle (with exponential backoff)
 - Alert if retries exceed threshold (e.g., 5 attempts)
+- **Note**: CCTP doesn't have liquidity issues (burn-and-mint), but attestation service or network problems can cause failures
 
 **Bridge Succeeds but Ledger Update Fails**:
 - Reconciliation job: Periodically check bridge tx hashes, match to ledger entries
@@ -384,8 +422,10 @@ AND destinationNetwork = ?
                │
                ▼
 ┌─────────────────────────────────────────┐
-│  Bridge Service (existing)              │
+│  Bridge Service (Circle CCTP for MVP)   │
 │  - bridge() called with batched amounts │
+│  - USDC burn-and-mint flow              │
+│  - Simplified: no liquidity checks      │
 └─────────────────────────────────────────┘
 ```
 
@@ -429,12 +469,26 @@ Before coding, decide:
 
 ## Next Steps
 
+### MVP Implementation (Circle CCTP for USDC)
+
 1. Choose storage solution (recommend PostgreSQL for production)
 2. Design ledger schema and create migration
-3. Implement settlement hook handler
-4. Build rebalancer service
-5. Add configuration layer
-6. Implement audit logging
-7. (Optional) Add merchant APIs
-8. Add monitoring and alerts
+3. Implement `CircleCCTPBridgeService`:
+   - Integrate Circle CCTP SDK/contracts
+   - Implement burn-and-mint flow
+   - Simplified `checkLiquidity()` (always true for USDC)
+   - Simplified `getExchangeRate()` (always 1.0 for USDC)
+4. Implement settlement hook handler
+5. Build rebalancer service
+6. Add configuration layer
+7. Implement audit logging
+8. (Optional) Add merchant APIs
+9. Add monitoring and alerts
+10. Test on Sepolia testnets
+
+### Future Expansion
+
+- Add support for non-USDC tokens via Wormhole or other bridge providers
+- Implement routing logic to choose bridge based on asset type
+- Add support for cross-asset swaps (e.g., USDC on Base → ETH on Polygon)
 
