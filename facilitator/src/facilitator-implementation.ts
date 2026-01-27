@@ -7,7 +7,6 @@ import {
   PaymentPayload,
   PaymentRequirements,
   SettleResponse,
-  VerifyResponse,
   SchemeNetworkFacilitator,
 } from "@x402/core/types";
 import { toFacilitatorEvmSigner } from "@x402/evm";
@@ -15,18 +14,175 @@ import { registerExactEvmScheme, ExactEvmScheme } from "@x402/evm/exact/facilita
 import { createWalletClient, http, publicActions } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
-import { BridgeService } from "./services/bridgeService.js";
 import { CircleCCTPBridgeService } from "./services/circleCCTPBridgeService.js";
-import { extractCrossChainInfo, CROSS_CHAIN, type CrossChainInfo } from "./extensions/crossChain.js";
+import { extractCrossChainInfo, CROSS_CHAIN } from "./extensions/crossChain.js";
 import { Network } from "@x402/core/types";
 import { CrossChainRouter } from "./schemes/crossChainRouter.js";
+import type { BridgeResult } from "./types/bridge.js";
 
-// Get directory of current file (for ESM modules)
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/**
+ * Decide whether a bridge error is retryable.
+ * Uses Circle CCTP error shape when available (code, type, recoverability, cause).
+ */
+function isRetryableBridgeError(error: unknown): boolean {
+  const err: any = error;
+
+  // Circle CCTP errors often have a recoverability field
+  if (err?.recoverability === "FATAL") {
+    return false;
+  }
+
+  // Insufficient balance is not retryable without operator action
+  const msg = (err?.message || String(err)).toLowerCase();
+  if (msg.includes("insufficient usdc balance") || msg.includes("insufficient token balance")) {
+    return false;
+  }
+
+  // Nonce issues and transient RPC problems are usually retryable
+  if (msg.includes("nonce too low") || msg.includes("failed to fetch") || msg.includes("gateway timeout")) {
+    return true;
+  }
+
+  // Default: allow a couple of retries for unknown/transient-seeming errors
+  return true;
+}
+
+/**
+ * Attempt to bridge funds with retry logic.
+ * Returns the bridge result on success, throws on permanent failure.
+ */
+async function attemptBridgeWithRetry(
+  bridgeService: CircleCCTPBridgeService,
+  sourceNetwork: Network,
+  sourceTxHash: string,
+  destinationNetwork: Network,
+  destinationAsset: string,
+  amount: string,
+  recipient: string,
+  maxAttempts: number = 3,
+): Promise<BridgeResult> {
+  let attempt = 0;
+  let lastError: unknown = null;
+
+  while (attempt < maxAttempts) {
+    attempt += 1;
+    try {
+      console.log(`🌉 Bridge attempt ${attempt}/${maxAttempts}`);
+      const bridgeResult = await bridgeService.bridge(
+        sourceNetwork,
+        sourceTxHash,
+        destinationNetwork,
+        destinationAsset,
+        amount,
+        recipient,
+      );
+      return bridgeResult;
+    } catch (err) {
+      lastError = err;
+      const retryable = isRetryableBridgeError(err);
+
+      console.error("❌ Cross-chain bridge attempt failed:", {
+        attempt,
+        maxAttempts,
+        retryable,
+        error: err instanceof Error ? err.message : String(err),
+        sourceTx: sourceTxHash,
+        sourceNetwork,
+        destinationNetwork,
+      });
+
+      if (!retryable || attempt >= maxAttempts) {
+        break;
+      }
+
+      // Simple linear backoff between retries
+      const delayMs = attempt * 1000;
+      console.log(`⏳ Waiting ${delayMs}ms before next bridge attempt`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  // All retries exhausted
+  throw lastError || new Error("Bridge failed after all retry attempts");
+}
+
+/**
+ * Handle cross-chain bridging asynchronously after settlement.
+ * This runs in the background and does not block the settlement response.
+ */
+function handleCrossChainBridgeAsync(
+  bridgeService: CircleCCTPBridgeService,
+  sourceNetwork: Network,
+  sourceTxHash: string,
+  destinationNetwork: Network,
+  destinationAsset: string,
+  amount: string,
+  recipient: string,
+): void {
+  // Fire-and-forget async task: do NOT block the settle response on bridging
+  void (async () => {
+    try {
+      console.log("🌉 Starting cross-chain bridge (async):", {
+        sourceNetwork,
+        sourceTx: sourceTxHash,
+        destinationNetwork,
+        asset: destinationAsset,
+        amount,
+      });
+
+      const bridgeResult = await attemptBridgeWithRetry(
+        bridgeService,
+        sourceNetwork,
+        sourceTxHash,
+        destinationNetwork,
+        destinationAsset,
+        amount,
+        recipient,
+      );
+
+      console.log("✅ Cross-chain bridge completed:", {
+        sourceTx: sourceTxHash,
+        bridgeTx: bridgeResult.bridgeTxHash,
+        destinationTx: bridgeResult.destinationTxHash,
+        destinationNetwork,
+        messageId: bridgeResult.messageId,
+      });
+
+      // TODO: Integrate with persistent storage / notifications:
+      // - Store bridge result in database with status=success
+      // - Notify merchant / ops
+      // - Update settlement status
+      // - Emit event for monitoring/analytics
+    } catch (error) {
+      // Final failure after retries - log a structured record
+      console.error("🚨 Cross-chain bridge permanently failed after retries:", {
+        error: error instanceof Error ? error.message : String(error),
+        sourceTx: sourceTxHash,
+        sourceNetwork,
+        destinationNetwork,
+        destinationAsset,
+        amount,
+        attempts: 3,
+      });
+
+      // TODO: Persistent failure handling:
+      // - Write a record to a durable store (DB / queue) for manual intervention
+      // - Alert operations (PagerDuty, email, etc.)
+      // - Expose an admin API to query / retry stuck bridges
+    }
+  })();
+}
+
+// ============================================================================
+// Environment Setup
+// ============================================================================
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
-// Load environment variables from .env file in project root
-// This ensures it works regardless of where the script is run from
 const envPath = join(__dirname, "..", ".env");
 const result = dotenv.config({ path: envPath });
 
@@ -36,10 +192,13 @@ if (result.error) {
   console.warn(`   Error: ${result.error.message}`);
 }
 
-// Configuration
 const PORT = process.env.PORT || "4022";
+const CROSS_CHAIN_ENABLED = process.env.CROSS_CHAIN_ENABLED !== "false"; // Default to enabled
 
-// Validate required environment variables
+// ============================================================================
+// EVM Setup
+// ============================================================================
+
 if (!process.env.EVM_PRIVATE_KEY) {
   console.error("❌ EVM_PRIVATE_KEY environment variable is required");
   console.error("");
@@ -53,14 +212,9 @@ if (!process.env.EVM_PRIVATE_KEY) {
   process.exit(1);
 }
 
-// Initialize EVM account and signer
-const evmAccount = privateKeyToAccount(
-  process.env.EVM_PRIVATE_KEY as `0x${string}`,
-);
+const evmAccount = privateKeyToAccount(process.env.EVM_PRIVATE_KEY as `0x${string}`);
 console.info(`✅ EVM Facilitator account: ${evmAccount.address}`);
 
-// Create Viem client for EVM operations
-// For testnet, use baseSepolia instead of base
 // Determine chain from RPC URL or use testnet by default
 const isTestnet = !process.env.EVM_RPC_URL?.includes("mainnet");
 const chain = isTestnet ? baseSepolia : base;
@@ -72,7 +226,6 @@ const viemClient = createWalletClient({
   transport: http(process.env.EVM_RPC_URL || defaultRpcUrl),
 }).extend(publicActions);
 
-// Create EVM facilitator signer
 const evmSigner = toFacilitatorEvmSigner({
   getCode: (args: { address: `0x${string}` }) => viemClient.getCode(args),
   address: evmAccount.address,
@@ -110,24 +263,23 @@ const evmSigner = toFacilitatorEvmSigner({
     viemClient.waitForTransactionReceipt(args),
 });
 
-// Initialize bridge service
-// Use Circle CCTP for USDC cross-chain transfers
+// ============================================================================
+// Bridge Service Setup
+// ============================================================================
+
 const bridgeService = new CircleCCTPBridgeService({
   provider: "cctp",
   facilitatorAddress: evmAccount.address,
 });
 
-// Cross-chain bridging configuration
-// Set CROSS_CHAIN_ENABLED=false in .env to disable bridging (only settle on source chain)
-const CROSS_CHAIN_ENABLED = process.env.CROSS_CHAIN_ENABLED !== "false"; // Default to enabled
+// ============================================================================
+// Scheme Setup
+// ============================================================================
 
-// Create EVM scheme instance (used by both exact and cross-chain)
 const evmScheme = new ExactEvmScheme(evmSigner, {
   deployERC4337WithEIP6492: process.env.DEPLOY_ERC4337_WITH_EIP6492 === "true",
 });
 
-// Create cross-chain router (delegates to registered scheme facilitators)
-// Pass a map of scheme name -> facilitator for generic scheme support
 const schemeFacilitators = new Map<string, SchemeNetworkFacilitator>();
 schemeFacilitators.set("exact", evmScheme);
 // Add more schemes here as they're implemented:
@@ -138,11 +290,12 @@ const crossChainRouter = new CrossChainRouter(schemeFacilitators, bridgeService,
   isEnabled: CROSS_CHAIN_ENABLED,
 });
 
-// Initialize x402 Facilitator
+// ============================================================================
+// Facilitator Setup with Hooks
+// ============================================================================
+
 const facilitator = new x402Facilitator()
-  // Register cross-chain extension
   .registerExtension(CROSS_CHAIN)
-  // Lifecycle hooks for logging/monitoring
   .onBeforeVerify(async (context) => {
     console.log("🔍 Before verify:", {
       scheme: context.requirements.scheme,
@@ -151,47 +304,35 @@ const facilitator = new x402Facilitator()
     });
 
     // Check bridge liquidity for cross-chain payments
-    // Detect cross-chain by extension, not scheme name (extension-based design)
-    // Route network is source (where user pays), extension is destination (where merchant receives)
     const crossChainInfo = extractCrossChainInfo(context.paymentPayload);
-    if (crossChainInfo) {
-      // Source is route network (where user pays)
+    if (crossChainInfo && CROSS_CHAIN_ENABLED) {
       const sourceNetwork = context.requirements.network as Network;
       const sourceAsset = context.requirements.asset;
-      // Destination is in extension (where merchant receives)
       const destinationNetwork = crossChainInfo.destinationNetwork as Network;
       const destinationAsset = crossChainInfo.destinationAsset;
 
-      if (CROSS_CHAIN_ENABLED) {
-        const hasLiquidity = await bridgeService.checkLiquidity(
+      const hasLiquidity = await bridgeService.checkLiquidity(
+        sourceNetwork,
+        destinationNetwork,
+        sourceAsset,
+        context.requirements.amount,
+      );
+
+      if (!hasLiquidity) {
+        return { abort: true, reason: "insufficient_bridge_liquidity" };
+      }
+
+      // Check exchange rate if different assets
+      if (sourceAsset !== destinationAsset) {
+        const rate = await bridgeService.getExchangeRate(
           sourceNetwork,
           destinationNetwork,
           sourceAsset,
-          context.requirements.amount,
+          destinationAsset,
         );
 
-        if (!hasLiquidity) {
-          return {
-            abort: true,
-            reason: "insufficient_bridge_liquidity",
-          };
-        }
-
-        // Check exchange rate if different assets
-        if (sourceAsset !== destinationAsset) {
-          const rate = await bridgeService.getExchangeRate(
-            sourceNetwork,
-            destinationNetwork,
-            sourceAsset,
-            destinationAsset,
-          );
-
-          if (rate <= 0) {
-            return {
-              abort: true,
-              reason: "invalid_exchange_rate",
-            };
-          }
+        if (rate <= 0) {
+          return { abort: true, reason: "invalid_exchange_rate" };
         }
       }
     }
@@ -215,17 +356,12 @@ const facilitator = new x402Facilitator()
       amount: context.requirements.amount,
     });
 
-    // Log cross-chain payment info if applicable
-    // Note: Actual cross-chain settlement is handled by CrossChainRouter.settle()
-    // which delegates to base scheme (exact, bazaar, etc.) on the source chain
-    // Detect cross-chain by extension, not scheme name (extension-based design)
-    // Route network is source, extension is destination
     const crossChainInfo = extractCrossChainInfo(context.paymentPayload);
     if (crossChainInfo) {
       console.log("🌉 Cross-chain payment detected, will settle on source chain:", {
-        sourceNetwork: context.requirements.network, // Route network is source
-        destinationNetwork: crossChainInfo.destinationNetwork, // Extension is destination
-        scheme: context.requirements.scheme, // Base scheme (exact, bazaar, etc.)
+        sourceNetwork: context.requirements.network,
+        destinationNetwork: crossChainInfo.destinationNetwork,
+        scheme: context.requirements.scheme,
       });
     }
   })
@@ -236,14 +372,7 @@ const facilitator = new x402Facilitator()
       network: context.result.network,
     });
 
-    // Handle cross-chain bridging after settlement
-    // This allows settlement to complete quickly, with bridging as async operation
-    // Detect cross-chain by checking extension (extension-based design):
-    // 1. Cross-chain extension exists in payload
-    // 2. Settlement network (source) differs from extension destination network
-    // 3. Settlement succeeded
-    // 4. Bridging is enabled
-    // Route network is source, extension is destination
+    // Handle cross-chain bridging asynchronously after settlement
     const crossChainInfo = extractCrossChainInfo(context.paymentPayload);
     if (
       crossChainInfo &&
@@ -251,58 +380,15 @@ const facilitator = new x402Facilitator()
       context.result.network !== crossChainInfo.destinationNetwork &&
       CROSS_CHAIN_ENABLED
     ) {
-      const destinationNetwork = crossChainInfo.destinationNetwork as Network;
-      const destinationAsset = crossChainInfo.destinationAsset;
-
-      try {
-        console.log("🌉 Starting cross-chain bridge:", {
-          sourceNetwork: context.result.network, // Route network (where settlement happened)
-          sourceTx: context.result.transaction,
-          destinationNetwork: destinationNetwork, // From extension
-          asset: destinationAsset, // From extension
-          amount: context.requirements.amount,
-        });
-
-        // Bridge funds from source chain to destination chain
-        // Use destinationPayTo from extension (merchant address on destination chain)
-        const destinationPayTo = crossChainInfo.destinationPayTo;
-        const bridgeResult = await bridgeService.bridge(
-          context.result.network as Network, // Source network (where settlement happened)
-          context.result.transaction, // Source transaction hash
-          destinationNetwork, // Destination network from extension
-          destinationAsset, // Destination asset from extension
-          context.requirements.amount,
-          destinationPayTo, // Merchant address on destination chain (from extension)
-        );
-
-        console.log("✅ Cross-chain bridge completed:", {
-          sourceTx: context.result.transaction,
-          bridgeTx: bridgeResult.bridgeTxHash,
-          destinationTx: bridgeResult.destinationTxHash,
-          destinationNetwork: destinationNetwork,
-        });
-
-        // TODO: You might want to:
-        // - Store bridge result in database
-        // - Send notification to merchant
-        // - Update settlement status
-        // - Emit event for monitoring/analytics
-      } catch (error) {
-        console.error("❌ Cross-chain bridge failed:", {
-          error: error instanceof Error ? error.message : "unknown",
-          sourceTx: context.result.transaction,
-          sourceNetwork: context.result.network,
-          destinationNetwork: crossChainInfo.destinationNetwork,
-        });
-
-        // TODO: Implement retry logic or alerting
-        // Settlement already succeeded on source chain, so funds are locked
-        // You might want to:
-        // - Queue bridge retry (with exponential backoff)
-        // - Alert operations team
-        // - Store failure for manual intervention
-        // - Emit failure event for monitoring
-      }
+      handleCrossChainBridgeAsync(
+        bridgeService,
+        context.result.network as Network,
+        context.result.transaction,
+        crossChainInfo.destinationNetwork as Network,
+        crossChainInfo.destinationAsset,
+        context.requirements.amount,
+        crossChainInfo.destinationPayTo,
+      );
     }
   })
   .onSettleFailure(async (context) => {
@@ -312,7 +398,10 @@ const facilitator = new x402Facilitator()
     });
   });
 
-// Register standard EVM schemes (same-chain payments)
+// ============================================================================
+// Register Payment Schemes
+// ============================================================================
+
 registerExactEvmScheme(facilitator, {
   signer: evmSigner,
   networks: [
@@ -328,25 +417,19 @@ registerExactEvmScheme(facilitator, {
 // Note: CrossChainRouter is NOT registered as a scheme
 // Cross-chain is extension-based, not scheme-based
 // The router is called directly from verify/settle endpoints when extension is detected
-// This ensures getSupported() only reports actual schemes (exact, bazaar, etc.), not "cross-chain"
 
 console.info("🌉 Cross-chain EVM facilitator initialized");
 console.info(`   Cross-chain bridging: ${CROSS_CHAIN_ENABLED ? "enabled" : "disabled"}`);
 console.info("   'exact' scheme: same-chain payments");
 console.info("   Cross-chain: Extension-based routing (any scheme + cross-chain extension)");
 
-// Initialize Express app
+// ============================================================================
+// Express Server Setup
+// ============================================================================
+
 const app = express();
 app.use(express.json());
 
-/**
- * POST /verify
- * Verify a payment payload against requirements
- * 
- * This endpoint checks for cross-chain extension in the payload.
- * If present, routes to CrossChainRouter regardless of requirements.scheme.
- * This allows clients to send "exact" scheme payments that are actually cross-chain.
- */
 app.post("/verify", async (req, res) => {
   console.log("📥 POST /verify - Received verify request");
   try {
@@ -361,12 +444,7 @@ app.post("/verify", async (req, res) => {
       });
     }
 
-    // Always use facilitator.verify() so hooks run for both same-chain and cross-chain payments
-    // The facilitator will route to the appropriate scheme facilitator (exact, bazaar, etc.)
-    // For cross-chain payments, the hooks will detect the extension and handle cross-chain logic
-    // The actual verification still happens on the source chain via the base scheme facilitator
     const response = await facilitator.verify(paymentPayload, paymentRequirements);
-
     res.json(response);
   } catch (error) {
     console.error("Verify error:", error);
@@ -376,10 +454,6 @@ app.post("/verify", async (req, res) => {
   }
 });
 
-/**
- * POST /settle
- * Settle a payment on-chain
- */
 app.post("/settle", async (req, res) => {
   console.log("📥 POST /settle - Received settle request");
   try {
@@ -394,13 +468,8 @@ app.post("/settle", async (req, res) => {
       });
     }
 
-    // Always use facilitator.settle() so hooks run for both same-chain and cross-chain payments
-    // The facilitator will route to the appropriate scheme facilitator (exact, bazaar, etc.)
-    // For cross-chain payments, the hooks will detect the extension and handle cross-chain logic
-    // The actual settlement still happens on the source chain via the base scheme facilitator
-    // Cross-chain bridging happens in the onAfterSettle hook
     const response = await facilitator.settle(paymentPayload, paymentRequirements);
-    
+
     console.log(`🔍 Settle response:`, {
       success: response.success,
       transaction: response.transaction,
@@ -413,11 +482,7 @@ app.post("/settle", async (req, res) => {
   } catch (error) {
     console.error("Settle error:", error);
 
-    // Check if this was an abort from hook
-    if (
-      error instanceof Error &&
-      error.message.includes("Settlement aborted:")
-    ) {
+    if (error instanceof Error && error.message.includes("Settlement aborted:")) {
       return res.json({
         success: false,
         errorReason: error.message.replace("Settlement aborted: ", ""),
@@ -432,10 +497,6 @@ app.post("/settle", async (req, res) => {
   }
 });
 
-/**
- * GET /supported
- * Get supported payment kinds, extensions, and signers
- */
 app.get("/supported", async (req, res) => {
   try {
     const response = facilitator.getSupported();
@@ -448,10 +509,6 @@ app.get("/supported", async (req, res) => {
   }
 });
 
-/**
- * GET /health
- * Health check endpoint
- */
 app.get("/health", (req, res) => {
   res.json({
     status: "healthy",
@@ -460,7 +517,6 @@ app.get("/health", (req, res) => {
   });
 });
 
-// Start the server
 app.listen(parseInt(PORT), () => {
   console.log(`🚀 RailBridge Cross-Chain Facilitator listening on port ${PORT}`);
   console.log(`📡 Endpoints:`);
