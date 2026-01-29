@@ -8,7 +8,7 @@ import { privateKeyToAccount, nonceManager } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
 import { Network } from "@x402/core/types";
 import { CircleCCTPBridgeService } from "./services/circleCCTPBridgeService.js";
-import { SqliteBridgeJobRepository } from "./services/bridgeJobRepository.js";
+import { SqliteBridgeJobRepository } from "./services/sqliteBridgeJobRepository.js";
 import { extractCrossChainInfo, CROSS_CHAIN } from "./extensions/crossChain.js";
 import { CrossChainRouter } from "./schemes/crossChainRouter.js";
 import { handleCrossChainBridgeAsync } from "./bridgeWorker.js";
