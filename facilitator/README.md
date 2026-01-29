@@ -42,6 +42,7 @@ Required variables:
 - `EVM_PRIVATE_KEY`: Private key for EVM facilitator wallet
 - `EVM_RPC_URL`: RPC endpoint for EVM chains
 - `DEPLOY_ERC4337_WITH_EIP6492` (optional): `true` to enable ERC-4337 smart wallet deployment
+- `BRIDGE_DB_PATH` (optional): SQLite database path for persisted bridge jobs (defaults to `bridge-jobs.sqlite`)
 
 ### 3. Run
 
@@ -716,4 +717,3 @@ npm run lint
 ## License
 
 MIT
-

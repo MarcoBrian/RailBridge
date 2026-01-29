@@ -1,4 +1,5 @@
 import type { BridgeResult } from "./types/bridge.js";
+import type { BridgeJobRepository } from "./types/bridgeJob.js";
 import type { CircleCCTPBridgeService } from "./services/circleCCTPBridgeService.js";
 import type { Network } from "@x402/core/types";
 
@@ -61,12 +62,16 @@ export async function attemptBridgeWithRetry(
   amount: string,
   recipient: string,
   maxAttempts: number = DEFAULT_MAX_ATTEMPTS,
+  onAttempt?: (attempt: number) => Promise<void>,
 ): Promise<BridgeResult> {
   let attempt = 0;
   let lastError: unknown = null;
 
   while (attempt < maxAttempts) {
     attempt += 1;
+    if (onAttempt) {
+      await onAttempt(attempt);
+    }
     try {
       logBridgeEvent("bridge_attempt", {
         attempt,
@@ -131,9 +136,21 @@ export function handleCrossChainBridgeAsync(
   amount: string,
   recipient: string,
   maxAttempts: number = DEFAULT_MAX_ATTEMPTS,
+  jobRepository?: BridgeJobRepository,
+  jobId?: string,
 ): void {
   void (async () => {
     try {
+      let job = null;
+      if (jobRepository && jobId) {
+        job = await jobRepository.getById(jobId);
+        if (job) {
+          job.status = "bridging";
+          job.updatedAt = new Date().toISOString();
+          await jobRepository.update(job);
+        }
+      }
+
       logBridgeEvent("bridge_start", {
         sourceNetwork,
         sourceTx: sourceTxHash,
@@ -141,6 +158,7 @@ export function handleCrossChainBridgeAsync(
         destinationAsset,
         amount,
         maxAttempts,
+        jobId,
       });
 
       const bridgeResult = await attemptBridgeWithRetry(
@@ -152,6 +170,16 @@ export function handleCrossChainBridgeAsync(
         amount,
         recipient,
         maxAttempts,
+        async (attempt) => {
+          if (jobRepository && jobId) {
+            const current = await jobRepository.getById(jobId);
+            if (current) {
+              current.attempts = attempt;
+              current.updatedAt = new Date().toISOString();
+              await jobRepository.update(current);
+            }
+          }
+        },
       );
 
       logBridgeEvent("bridge_success", {
@@ -163,7 +191,20 @@ export function handleCrossChainBridgeAsync(
         bridgeTx: bridgeResult.bridgeTxHash,
         destinationTx: bridgeResult.destinationTxHash,
         messageId: bridgeResult.messageId,
+        jobId,
       });
+
+      if (jobRepository && jobId) {
+        const current = await jobRepository.getById(jobId);
+        if (current) {
+          current.status = "completed";
+          current.bridgeTxHash = bridgeResult.bridgeTxHash;
+          current.destinationTxHash = bridgeResult.destinationTxHash;
+          current.messageId = bridgeResult.messageId;
+          current.updatedAt = new Date().toISOString();
+          await jobRepository.update(current);
+        }
+      }
     } catch (error) {
       logBridgeEvent("bridge_failure", {
         error: error instanceof Error ? error.message : String(error),
@@ -176,7 +217,18 @@ export function handleCrossChainBridgeAsync(
         destinationAsset,
         amount,
         attempts: maxAttempts,
+        jobId,
       });
+
+      if (jobRepository && jobId) {
+        const current = await jobRepository.getById(jobId);
+        if (current) {
+          current.status = "failed";
+          current.lastError = error instanceof Error ? error.message : String(error);
+          current.updatedAt = new Date().toISOString();
+          await jobRepository.update(current);
+        }
+      }
     }
   })();
 }

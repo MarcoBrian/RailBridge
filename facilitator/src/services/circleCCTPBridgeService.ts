@@ -248,7 +248,7 @@ export class CircleCCTPBridgeService implements IBridgeService {
    * 
    * TODO: Enhance with actual USDC address checks per chain
    */
-  private isUSDC(asset: string, chain: Network): boolean {
+  isUSDC(asset: string, chain: Network): boolean {
     if (!isAddress(asset)) {
       return false;
     }
@@ -258,6 +258,10 @@ export class CircleCCTPBridgeService implements IBridgeService {
       return false;
     }
     return allowlist.some((address) => address.toLowerCase() === normalized);
+  }
+
+  supportsChain(network: Network): boolean {
+    return Boolean(this.mapNetworkToChainName(network));
   }
 
   /**

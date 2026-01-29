@@ -3,15 +3,17 @@ import { x402Facilitator } from "@x402/core/facilitator";
 import { PaymentPayload, PaymentRequirements, SettleResponse, SchemeNetworkFacilitator } from "@x402/core/types";
 import { toFacilitatorEvmSigner } from "@x402/evm";
 import { registerExactEvmScheme, ExactEvmScheme } from "@x402/evm/exact/facilitator";
-import { createWalletClient, http, publicActions } from "viem";
+import { createWalletClient, http, publicActions, isAddress } from "viem";
 import { privateKeyToAccount, nonceManager } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
 import { Network } from "@x402/core/types";
 import { CircleCCTPBridgeService } from "./services/circleCCTPBridgeService.js";
+import { SqliteBridgeJobRepository } from "./services/sqliteBridgeJobRepository.js";
 import { extractCrossChainInfo, CROSS_CHAIN } from "./extensions/crossChain.js";
 import { CrossChainRouter } from "./schemes/crossChainRouter.js";
 import { handleCrossChainBridgeAsync } from "./bridgeWorker.js";
 import { config } from "./config.js";
+import { buildBridgeIdempotencyKey, createBridgeJob, type BridgeJobRepository } from "./types/bridgeJob.js";
 
 // ============================================================================
 // EVM Setup
@@ -77,6 +79,45 @@ const bridgeService = new CircleCCTPBridgeService({
   provider: "cctp",
   facilitatorAddress: evmAccount.address,
 });
+const bridgeJobRepository: BridgeJobRepository = new SqliteBridgeJobRepository(config.BRIDGE_DB_PATH);
+
+function validateCrossChainRequest(
+  paymentPayload: PaymentPayload,
+  requirements: PaymentRequirements,
+): { abort: boolean; reason?: string } {
+  const crossChainInfo = extractCrossChainInfo(paymentPayload);
+  if (!crossChainInfo || !config.CROSS_CHAIN_ENABLED) {
+    return { abort: false };
+  }
+
+  const sourceNetwork = requirements.network as Network;
+  const destinationNetwork = crossChainInfo.destinationNetwork as Network;
+  const sourceAsset = requirements.asset;
+  const destinationAsset = crossChainInfo.destinationAsset;
+  const destinationPayTo = crossChainInfo.destinationPayTo;
+
+  if (!isAddress(destinationPayTo)) {
+    return { abort: true, reason: "invalid_destination_pay_to" };
+  }
+
+  if (!bridgeService.supportsChain(sourceNetwork) || !bridgeService.supportsChain(destinationNetwork)) {
+    return { abort: true, reason: "unsupported_chain_pair" };
+  }
+
+  if (!bridgeService.isUSDC(sourceAsset, sourceNetwork)) {
+    return { abort: true, reason: "unsupported_source_asset" };
+  }
+
+  if (!bridgeService.isUSDC(destinationAsset, destinationNetwork)) {
+    return { abort: true, reason: "unsupported_destination_asset" };
+  }
+
+  if (requirements.payTo.toLowerCase() !== evmAccount.address.toLowerCase()) {
+    return { abort: true, reason: "invalid_source_pay_to" };
+  }
+
+  return { abort: false };
+}
 
 // ============================================================================
 // Scheme Setup
@@ -108,6 +149,14 @@ const facilitator = new x402Facilitator()
       network: context.requirements.network,
       payer: context.paymentPayload.payload,
     });
+
+    const validation = validateCrossChainRequest(
+      context.paymentPayload,
+      context.requirements,
+    );
+    if (validation.abort) {
+      return { abort: true, reason: validation.reason ?? "invalid_cross_chain_request" };
+    }
 
     // Check bridge liquidity for cross-chain payments
     const crossChainInfo = extractCrossChainInfo(context.paymentPayload);
@@ -162,6 +211,14 @@ const facilitator = new x402Facilitator()
       amount: context.requirements.amount,
     });
 
+    const validation = validateCrossChainRequest(
+      context.paymentPayload,
+      context.requirements,
+    );
+    if (validation.abort) {
+      return { abort: true, reason: validation.reason ?? "invalid_cross_chain_request" };
+    }
+
     const crossChainInfo = extractCrossChainInfo(context.paymentPayload);
     if (crossChainInfo) {
       console.log("🌉 Cross-chain payment detected, will settle on source chain:", {
@@ -186,6 +243,34 @@ const facilitator = new x402Facilitator()
       context.result.network !== crossChainInfo.destinationNetwork &&
       config.CROSS_CHAIN_ENABLED
     ) {
+      const idempotencyKey = buildBridgeIdempotencyKey(
+        context.result.network as Network,
+        context.result.transaction,
+        crossChainInfo.destinationNetwork as Network,
+      );
+
+      const existingJob = await bridgeJobRepository.getByIdempotencyKey(idempotencyKey);
+      if (existingJob && existingJob.status !== "failed") {
+        console.log("ℹ️ Bridge job already exists, skipping creation:", {
+          id: existingJob.id,
+          status: existingJob.status,
+          sourceTx: context.result.transaction,
+        });
+        return;
+      }
+
+      const job = createBridgeJob({
+        idempotencyKey,
+        sourceNetwork: context.result.network as Network,
+        destinationNetwork: crossChainInfo.destinationNetwork as Network,
+        sourceTxHash: context.result.transaction,
+        amount: context.requirements.amount,
+        destinationAsset: crossChainInfo.destinationAsset,
+        destinationPayTo: crossChainInfo.destinationPayTo,
+      });
+
+      await bridgeJobRepository.create(job);
+
       handleCrossChainBridgeAsync(
         bridgeService,
         context.result.network as Network,
@@ -194,6 +279,9 @@ const facilitator = new x402Facilitator()
         crossChainInfo.destinationAsset,
         context.requirements.amount,
         crossChainInfo.destinationPayTo,
+        undefined,
+        bridgeJobRepository,
+        job.id,
       );
     }
   })
