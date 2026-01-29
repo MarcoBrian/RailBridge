@@ -525,5 +525,3 @@ app.listen(parseInt(PORT), () => {
   console.log(`   GET  /supported - Get supported payment kinds`);
   console.log(`   GET  /health - Health check`);
 });
-
-

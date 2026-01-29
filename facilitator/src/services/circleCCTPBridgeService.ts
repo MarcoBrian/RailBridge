@@ -1,6 +1,6 @@
 import { BridgeKit } from "@circle-fin/bridge-kit";
 import { createViemAdapterFromPrivateKey } from "@circle-fin/adapter-viem-v2";
-import { createPublicClient, http } from "viem";
+import { createPublicClient, http, isAddress } from "viem";
 import type {
   BridgeConfig,
   BridgeResult,
@@ -42,6 +42,14 @@ export class CircleCCTPBridgeService implements IBridgeService {
     "eip155:1": "https://eth.llamarpc.com", // Ethereum Mainnet
     "eip155:80002": "https://rpc-amoy.polygon.technology", // Polygon Amoy
     "eip155:137": "https://polygon-rpc.com", // Polygon Mainnet
+  };
+
+  private readonly defaultUsdcAddresses: Record<string, string[]> = {
+    "eip155:84532": ["0x036CbD53842c5426634e7929541eC2318f3dCF7e"], // Base Sepolia USDC
+    "eip155:8453": ["0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"], // Base Mainnet USDC
+    "eip155:11155111": ["0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"], // Ethereum Sepolia USDC
+    "eip155:1": ["0xA0b86991C6218b36c1d19D4a2e9Eb0cE3606eB48"], // Ethereum Mainnet USDC
+    "eip155:137": ["0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"], // Polygon Mainnet USDC
   };
 
   constructor(config: BridgeConfig) {
@@ -112,7 +120,7 @@ export class CircleCCTPBridgeService implements IBridgeService {
     // For USDC via CCTP, rate is always 1:1 (same asset)
     // If different assets, would need price oracle (not supported by CCTP)
     
-    if (this.isUSDC(sourceAsset) && this.isUSDC(destAsset)) {
+    if (this.isUSDC(sourceAsset, sourceChain) && this.isUSDC(destAsset, destChain)) {
       return 1.0;
     }
     
@@ -134,6 +142,7 @@ export class CircleCCTPBridgeService implements IBridgeService {
     amount: string,
     recipient: string,
   ): Promise<BridgeResult> {
+    this.validateBridgeInputs(sourceChain, destChain, asset, amount, recipient);
     // amount here is in on-chain base units (USDC has 6 decimals)
     // Circle BridgeKit expects a human-readable decimal string (e.g. "0.01")
     const humanAmount = this.toHumanReadableUSDC(amount);
@@ -147,11 +156,6 @@ export class CircleCCTPBridgeService implements IBridgeService {
 
     if (!sourceChainName || !destChainName) {
       throw new Error(`Unsupported chain pair: ${sourceChain} -> ${destChain}`);
-    }
-
-    // Verify it's USDC (CCTP only supports USDC)
-    if (!this.isUSDC(asset)) {
-      throw new Error(`CCTP only supports USDC. Asset ${asset} is not supported.`);
     }
 
     console.log(`[CCTP] Bridging USDC:`, {
@@ -244,10 +248,16 @@ export class CircleCCTPBridgeService implements IBridgeService {
    * 
    * TODO: Enhance with actual USDC address checks per chain
    */
-  private isUSDC(asset: string): boolean {
-    // For now, assume if it's being used with CCTP, it's USDC
-    // Could enhance by checking against known USDC addresses per chain
-    return true; // CCTP only supports USDC anyway
+  private isUSDC(asset: string, chain: Network): boolean {
+    if (!isAddress(asset)) {
+      return false;
+    }
+    const normalized = asset.toLowerCase();
+    const allowlist = this.defaultUsdcAddresses[chain];
+    if (!allowlist || allowlist.length === 0) {
+      return false;
+    }
+    return allowlist.some((address) => address.toLowerCase() === normalized);
   }
 
   /**
@@ -305,7 +315,7 @@ export class CircleCCTPBridgeService implements IBridgeService {
     console.log(`[CCTP] Waiting for source transaction confirmation: ${chain}, TX: ${txHash}`);
 
     // Get RPC URL for the source chain
-    const rpcUrl = this.config.rpcUrls?.[chain] || this.chainRpcMap[chain] || process.env.EVM_RPC_URL;
+    const rpcUrl = this.chainRpcMap[chain] || process.env.EVM_RPC_URL;
     
     if (!rpcUrl) {
       console.warn(`[CCTP] No RPC URL found for ${chain}, skipping confirmation wait`);
@@ -339,6 +349,34 @@ export class CircleCCTPBridgeService implements IBridgeService {
   getSupportedChains(): string[] {
     return this.kit.getSupportedChains().map(c => c.chain);
   }
+
+  private validateBridgeInputs(
+    sourceChain: Network,
+    destChain: Network,
+    asset: string,
+    amount: string,
+    recipient: string,
+  ): void {
+    if (!this.mapNetworkToChainName(sourceChain) || !this.mapNetworkToChainName(destChain)) {
+      throw new Error(`Unsupported chain pair: ${sourceChain} -> ${destChain}`);
+    }
+
+    if (!isAddress(recipient)) {
+      throw new Error(`Invalid recipient address: ${recipient}`);
+    }
+
+    if (!/^\d+$/.test(amount)) {
+      throw new Error(`Invalid amount: ${amount}. Expected base-unit integer string.`);
+    }
+
+    const numericAmount = BigInt(amount);
+    if (numericAmount <= 0n) {
+      throw new Error(`Invalid amount: ${amount}. Must be greater than zero.`);
+    }
+
+    if (!this.isUSDC(asset, sourceChain)) {
+      throw new Error(`CCTP only supports USDC on ${sourceChain}. Asset ${asset} is not supported.`);
+    }
+  }
+
 }
-
-
