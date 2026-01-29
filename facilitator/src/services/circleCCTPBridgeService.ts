@@ -49,10 +49,12 @@ export class CircleCCTPBridgeService implements IBridgeService {
     this.kit = new BridgeKit();
     
     // Initialize adapter if private key is available
-    if (process.env.EVM_PRIVATE_KEY) {
+    const bridgeKey = process.env.BRIDGE_EVM_PRIVATE_KEY || process.env.EVM_PRIVATE_KEY;
+    if (bridgeKey) {
       this.adapter = createViemAdapterFromPrivateKey({
-        privateKey: process.env.EVM_PRIVATE_KEY as `0x${string}`,
+        privateKey: bridgeKey as `0x${string}`,
       });
+      this.registerNativeBalanceHandler();
     }
   }
 
@@ -170,17 +172,15 @@ export class CircleCCTPBridgeService implements IBridgeService {
       // This ensures the settlement transaction has confirmed and funds are available
       await this.waitForSourceConfirmation(sourceChain, sourceTxHash);
 
-      // Recreate adapter after settlement to force fresh nonce query
-      // BridgeKit's adapter caches nonce internally, so we recreate it to get fresh state
-      // This prevents nonce conflicts when the settlement transaction just incremented the nonce
-      this.recreateAdapter();
+      // Log current pending nonce for debugging (uses shared nonce manager)
+      await this.logCurrentNonce(sourceChain);
 
       // Execute bridge using Circle BridgeKit
       // Type assertion: sourceChainName and destChainName are validated above and match BridgeChainIdentifier
-      const result = await this.kit.bridge({
-        from: { adapter: this.adapter, chain: sourceChainName as any },
+      const result = await (this.kit as any).bridge({
+        from: { adapter: this.adapter as any, chain: sourceChainName as any },
         to: {
-          adapter: this.adapter,
+          adapter: this.adapter as any,
           chain: destChainName as any,
           recipientAddress: recipient,
         },
@@ -188,11 +188,11 @@ export class CircleCCTPBridgeService implements IBridgeService {
       });
 
       // Extract transaction hashes from result
-      const burnStep = result.steps?.find(s => s.name === "burn");
-      const mintStep = result.steps?.find(s => s.name === "mint");
+      const burnStep = result.steps?.find((s: { name?: string; txHash?: string }) => s.name === "burn");
+      const mintStep = result.steps?.find((s: { name?: string; txHash?: string }) => s.name === "mint");
 
       if (result.state === "error") {
-        const errorStep = result.steps?.find(s => s.state === "error");
+        const errorStep = result.steps?.find((s: { state?: string; name?: string; errorMessage?: string }) => s.state === "error");
         throw new Error(
           `CCTP bridge failed at step "${errorStep?.name}": ${errorStep?.errorMessage || "Unknown error"}`
         );
@@ -214,7 +214,7 @@ export class CircleCCTPBridgeService implements IBridgeService {
       }
 
       // Extract message ID from attestation step if available
-      const attestationStep = result.steps?.find(s => s.name === "fetchAttestation");
+      const attestationStep = result.steps?.find((s: { name?: string; data?: unknown }) => s.name === "fetchAttestation");
       const messageId = attestationStep?.data && typeof attestationStep.data === 'object' && 'attestation' in attestationStep.data
         ? (attestationStep.data as { attestation?: string }).attestation
         : undefined;
@@ -277,21 +277,78 @@ export class CircleCCTPBridgeService implements IBridgeService {
   }
 
   /**
-   * Recreate the adapter to force fresh nonce query
-   * BridgeKit's adapter caches nonce internally, so recreating it ensures
-   * it queries the current nonce from the chain after settlement
+   * Log current pending nonce for debugging.
+   * Uses pending nonce so it reflects in-flight transactions.
    */
-  private recreateAdapter(): void {
-    if (!process.env.EVM_PRIVATE_KEY) {
-      console.warn(`[CCTP] Cannot recreate adapter: EVM_PRIVATE_KEY not set`);
+  private async logCurrentNonce(chain: Network): Promise<void> {
+    const rpcUrl = this.config.rpcUrls?.[chain] || this.chainRpcMap[chain] || process.env.EVM_RPC_URL;
+    const facilitatorAddress = this.config.facilitatorAddress as `0x${string}` | undefined;
+
+    if (!rpcUrl || !facilitatorAddress) {
       return;
     }
 
-    console.log(`[CCTP] Recreating adapter to refresh nonce state`);
-    this.adapter = createViemAdapterFromPrivateKey({
-      privateKey: process.env.EVM_PRIVATE_KEY as `0x${string}`,
-    });
-    console.log(`[CCTP] Adapter recreated - will query fresh nonce on next transaction`);
+    try {
+      const publicClient = createPublicClient({
+        transport: http(rpcUrl),
+      });
+      const pendingNonce = await publicClient.getTransactionCount({
+        address: facilitatorAddress,
+        blockTag: "pending",
+      });
+      console.log(
+        JSON.stringify({
+          event: "bridge_nonce",
+          timestamp: new Date().toISOString(),
+          chain,
+          address: facilitatorAddress,
+          pendingNonce,
+        }),
+      );
+    } catch (error) {
+      console.warn(`[CCTP] Failed to fetch pending nonce:`, error instanceof Error ? error.message : error);
+    }
+  }
+
+  /**
+   * Register a native.balanceOf handler required by provider-cctp-v2.
+   * Some adapter versions do not ship this handler, which causes
+   * "Action native.balanceOf is not supported" errors.
+   */
+  private registerNativeBalanceHandler(): void {
+    if (!this.adapter) {
+      return;
+    }
+
+    try {
+      (this.adapter.actionRegistry as any).registerHandler(
+        "native.balanceOf",
+        (async (
+          params: { walletAddress?: string },
+          context: { chain: any; address?: string },
+        ) => {
+          const walletAddress = params.walletAddress ?? context.address;
+          if (!walletAddress) {
+            throw new Error("native.balanceOf requires walletAddress");
+          }
+
+          const publicClient = await this.adapter!.getPublicClient(context.chain);
+          const balance = await publicClient.getBalance({ address: walletAddress as `0x${string}` });
+
+          return {
+            type: "noop",
+            estimate: async () => ({ gas: 0n, gasPrice: 0n, fee: "0" }),
+            execute: async () => balance.toString(),
+          };
+        }) as any,
+      );
+      console.log("[CCTP] Registered native.balanceOf handler");
+    } catch (error) {
+      console.warn(
+        "[CCTP] Failed to register native.balanceOf handler:",
+        error instanceof Error ? error.message : error,
+      );
+    }
   }
 
   /**
