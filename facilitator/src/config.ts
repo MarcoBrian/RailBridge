@@ -33,6 +33,7 @@ const PORT = process.env.PORT || "4022";
 const CROSS_CHAIN_ENABLED = process.env.CROSS_CHAIN_ENABLED !== "false"; // Default to enabled
 const EVM_RPC_URL = process.env.EVM_RPC_URL;
 const DEPLOY_ERC4337_WITH_EIP6492 = process.env.DEPLOY_ERC4337_WITH_EIP6492 === "true";
+const BRIDGE_DB_PATH = process.env.BRIDGE_DB_PATH || "bridge-jobs.sqlite";
 
 export const config = {
   PORT,
@@ -40,5 +41,5 @@ export const config = {
   EVM_PRIVATE_KEY,
   EVM_RPC_URL,
   DEPLOY_ERC4337_WITH_EIP6492,
+  BRIDGE_DB_PATH,
 };
-

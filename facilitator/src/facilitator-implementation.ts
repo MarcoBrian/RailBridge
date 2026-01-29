@@ -8,10 +8,12 @@ import { privateKeyToAccount, nonceManager } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
 import { Network } from "@x402/core/types";
 import { CircleCCTPBridgeService } from "./services/circleCCTPBridgeService.js";
+import { SqliteBridgeJobRepository } from "./services/bridgeJobRepository.js";
 import { extractCrossChainInfo, CROSS_CHAIN } from "./extensions/crossChain.js";
 import { CrossChainRouter } from "./schemes/crossChainRouter.js";
 import { handleCrossChainBridgeAsync } from "./bridgeWorker.js";
 import { config } from "./config.js";
+import { buildBridgeIdempotencyKey } from "./types/bridgeJob.js";
 
 // ============================================================================
 // EVM Setup
@@ -77,6 +79,7 @@ const bridgeService = new CircleCCTPBridgeService({
   provider: "cctp",
   facilitatorAddress: evmAccount.address,
 });
+const bridgeJobRepository = new SqliteBridgeJobRepository(config.BRIDGE_DB_PATH);
 
 function validateCrossChainRequest(
   paymentPayload: PaymentPayload,
@@ -240,6 +243,34 @@ const facilitator = new x402Facilitator()
       context.result.network !== crossChainInfo.destinationNetwork &&
       config.CROSS_CHAIN_ENABLED
     ) {
+      const idempotencyKey = buildBridgeIdempotencyKey(
+        context.result.network as Network,
+        context.result.transaction,
+        crossChainInfo.destinationNetwork as Network,
+      );
+
+      const existingJob = await bridgeJobRepository.getByIdempotencyKey(idempotencyKey);
+      if (existingJob && existingJob.status !== "failed") {
+        console.log("ℹ️ Bridge job already exists, skipping creation:", {
+          id: existingJob.id,
+          status: existingJob.status,
+          sourceTx: context.result.transaction,
+        });
+        return;
+      }
+
+      const job = bridgeJobRepository.createNewJob({
+        idempotencyKey,
+        sourceNetwork: context.result.network as Network,
+        destinationNetwork: crossChainInfo.destinationNetwork as Network,
+        sourceTxHash: context.result.transaction,
+        amount: context.requirements.amount,
+        destinationAsset: crossChainInfo.destinationAsset,
+        destinationPayTo: crossChainInfo.destinationPayTo,
+      });
+
+      await bridgeJobRepository.create(job);
+
       handleCrossChainBridgeAsync(
         bridgeService,
         context.result.network as Network,
@@ -248,6 +279,9 @@ const facilitator = new x402Facilitator()
         crossChainInfo.destinationAsset,
         context.requirements.amount,
         crossChainInfo.destinationPayTo,
+        undefined,
+        bridgeJobRepository,
+        job.id,
       );
     }
   })
