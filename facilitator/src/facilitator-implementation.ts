@@ -13,7 +13,7 @@ import { extractCrossChainInfo, CROSS_CHAIN } from "./extensions/crossChain.js";
 import { CrossChainRouter } from "./schemes/crossChainRouter.js";
 import { handleCrossChainBridgeAsync } from "./bridgeWorker.js";
 import { config } from "./config.js";
-import { buildBridgeIdempotencyKey } from "./types/bridgeJob.js";
+import { buildBridgeIdempotencyKey, createBridgeJob, type BridgeJobRepository } from "./types/bridgeJob.js";
 
 // ============================================================================
 // EVM Setup
@@ -79,7 +79,7 @@ const bridgeService = new CircleCCTPBridgeService({
   provider: "cctp",
   facilitatorAddress: evmAccount.address,
 });
-const bridgeJobRepository = new SqliteBridgeJobRepository(config.BRIDGE_DB_PATH);
+const bridgeJobRepository: BridgeJobRepository = new SqliteBridgeJobRepository(config.BRIDGE_DB_PATH);
 
 function validateCrossChainRequest(
   paymentPayload: PaymentPayload,
@@ -259,7 +259,7 @@ const facilitator = new x402Facilitator()
         return;
       }
 
-      const job = bridgeJobRepository.createNewJob({
+      const job = createBridgeJob({
         idempotencyKey,
         sourceNetwork: context.result.network as Network,
         destinationNetwork: crossChainInfo.destinationNetwork as Network,

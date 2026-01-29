@@ -1,5 +1,4 @@
 import Database from "better-sqlite3";
-import { randomUUID } from "crypto";
 import type { BridgeJob, BridgeJobRepository, BridgeJobStatus } from "../types/bridgeJob.js";
 
 type BridgeJobRow = {
@@ -143,32 +142,6 @@ export class SqliteBridgeJobRepository implements BridgeJobRepository {
       messageId: job.messageId ?? null,
     });
     return Promise.resolve(job);
-  }
-
-  createNewJob(params: {
-    idempotencyKey: string;
-    sourceNetwork: string;
-    destinationNetwork: string;
-    sourceTxHash: string;
-    amount: string;
-    destinationAsset: string;
-    destinationPayTo: string;
-  }): BridgeJob {
-    const now = new Date().toISOString();
-    return {
-      id: randomUUID(),
-      idempotencyKey: params.idempotencyKey,
-      sourceNetwork: params.sourceNetwork,
-      destinationNetwork: params.destinationNetwork,
-      sourceTxHash: params.sourceTxHash,
-      amount: params.amount,
-      destinationAsset: params.destinationAsset,
-      destinationPayTo: params.destinationPayTo,
-      status: "pending",
-      attempts: 0,
-      createdAt: now,
-      updatedAt: now,
-    };
   }
 
   private mapRow(row: BridgeJobRow): BridgeJob {
