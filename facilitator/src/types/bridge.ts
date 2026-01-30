@@ -76,3 +76,4 @@ export interface BridgeResult {
   destChain: string;
   messageId?: string; // For tracking bridge messages
 }
+

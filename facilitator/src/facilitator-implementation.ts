@@ -2,11 +2,14 @@ import express from "express";
 import { x402Facilitator } from "@x402/core/facilitator";
 import { PaymentPayload, PaymentRequirements, SettleResponse, SchemeNetworkFacilitator } from "@x402/core/types";
 import { toFacilitatorEvmSigner } from "@x402/evm";
-import { registerExactEvmScheme, ExactEvmScheme } from "@x402/evm/exact/facilitator";
-import { createWalletClient, http, publicActions } from "viem";
-import { privateKeyToAccount, nonceManager } from "viem/accounts";
-import { base, baseSepolia } from "viem/chains";
+import { ExactEvmSchemeV1 } from "@x402/evm/exact/v1/facilitator";
+import { ExactEvmSchemeDomainFacilitator } from "./schemes/exact-evm-domain.js";
+import { NETWORKS as V1_NETWORKS } from "@x402/evm/v1";
+import { createWalletClient, defineChain, http, publicActions } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { createNonceManager, jsonRpc } from "viem/nonce";
 import { Network } from "@x402/core/types";
+import { BridgeKit, type EVMChainDefinition } from "@circle-fin/bridge-kit";
 import { CircleCCTPBridgeService } from "./services/circleCCTPBridgeService.js";
 import { extractCrossChainInfo, CROSS_CHAIN } from "./extensions/crossChain.js";
 import { CrossChainRouter } from "./schemes/crossChainRouter.js";
@@ -17,56 +20,109 @@ import { config } from "./config.js";
 // EVM Setup
 // ============================================================================
 
-// Use shared nonce manager to coordinate nonces across facilitator + BridgeKit
-const evmAccount = privateKeyToAccount(config.EVM_PRIVATE_KEY, { nonceManager });
+// Base account for address logging and non-signing uses.
+const evmAccount = privateKeyToAccount(config.EVM_PRIVATE_KEY);
 console.info(`✅ EVM Facilitator account: ${evmAccount.address}`);
 
-// Determine chain from RPC URL or use testnet by default
-const isTestnet = !config.EVM_RPC_URL?.includes("mainnet");
-const chain = isTestnet ? baseSepolia : base;
-const defaultRpcUrl = isTestnet ? "https://sepolia.base.org" : "https://mainnet.base.org";
+type EvmChainConfig = {
+  network: Network;
+  rpcUrl: string;
+  chain: ReturnType<typeof defineChain>;
+};
 
-const viemClient = createWalletClient({
-  account: evmAccount,
-  chain: chain,
-  transport: http(config.EVM_RPC_URL || defaultRpcUrl),
-}).extend(publicActions);
+const buildCctpEvmChains = (): EvmChainConfig[] => {
+  const kit = new BridgeKit();
+  const evmChains = kit.getSupportedChains({ chainType: "evm" });
 
-const evmSigner = toFacilitatorEvmSigner({
-  getCode: (args: { address: `0x${string}` }) => viemClient.getCode(args),
-  address: evmAccount.address,
-  readContract: (args: {
-    address: `0x${string}`;
-    abi: readonly unknown[];
-    functionName: string;
-    args?: readonly unknown[];
-  }) =>
-    viemClient.readContract({
-      ...args,
-      args: args.args || [],
+  return evmChains
+    .filter((chain): chain is EVMChainDefinition => chain.type === "evm")
+    .map((chain) => {
+      const rpcUrl = chain.rpcEndpoints?.[0];
+      if (!rpcUrl) {
+        return null;
+      }
+      return {
+        network: `eip155:${chain.chainId}` as Network,
+        rpcUrl,
+        chain: defineChain({
+          id: chain.chainId,
+          name: chain.name,
+          nativeCurrency: chain.nativeCurrency,
+          rpcUrls: { default: { http: [rpcUrl] } },
+          testnet: chain.isTestnet,
+        }),
+      };
+    })
+    .filter((chain): chain is EvmChainConfig => Boolean(chain));
+};
+
+const cctpEvmChains = buildCctpEvmChains();
+if (!cctpEvmChains.length) {
+  throw new Error("No supported EVM chains found from Circle BridgeKit");
+}
+
+const exactSchemesByNetwork = new Map<Network, ExactEvmSchemeDomainFacilitator>();
+let v1EvmSigner: ReturnType<typeof toFacilitatorEvmSigner> | null = null;
+cctpEvmChains.forEach(({ network, rpcUrl, chain }) => {
+  // Create a chain-scoped nonce manager to avoid cross-chain nonce drift.
+  const nonceManager = createNonceManager({ source: jsonRpc() });
+  const chainAccount = privateKeyToAccount(config.EVM_PRIVATE_KEY, {
+    nonceManager,
+  });
+  const viemClient = createWalletClient({
+    account: chainAccount,
+    chain,
+    transport: http(rpcUrl),
+  }).extend(publicActions);
+
+  const evmSigner = toFacilitatorEvmSigner({
+    getCode: (args: { address: `0x${string}` }) => viemClient.getCode(args),
+    address: chainAccount.address,
+    readContract: (args: {
+      address: `0x${string}`;
+      abi: readonly unknown[];
+      functionName: string;
+      args?: readonly unknown[];
+    }) =>
+      viemClient.readContract({
+        ...args,
+        args: args.args || [],
+      }),
+    verifyTypedData: (args: {
+      address: `0x${string}`;
+      domain: Record<string, unknown>;
+      types: Record<string, unknown>;
+      primaryType: string;
+      message: Record<string, unknown>;
+      signature: `0x${string}`;
+    }) => viemClient.verifyTypedData(args as any),
+    writeContract: (args: {
+      address: `0x${string}`;
+      abi: readonly unknown[];
+      functionName: string;
+      args: readonly unknown[];
+    }) =>
+      viemClient.writeContract({
+        ...args,
+        args: args.args || [],
+        chain: undefined,
+      }),
+    sendTransaction: (args: { to: `0x${string}`; data: `0x${string}` }) =>
+      viemClient.sendTransaction({ ...args, chain: undefined }),
+    waitForTransactionReceipt: (args: { hash: `0x${string}` }) =>
+      viemClient.waitForTransactionReceipt(args),
+  });
+
+  exactSchemesByNetwork.set(
+    network,
+    new ExactEvmSchemeDomainFacilitator(evmSigner, {
+      deployERC4337WithEIP6492: config.DEPLOY_ERC4337_WITH_EIP6492,
     }),
-  verifyTypedData: (args: {
-    address: `0x${string}`;
-    domain: Record<string, unknown>;
-    types: Record<string, unknown>;
-    primaryType: string;
-    message: Record<string, unknown>;
-    signature: `0x${string}`;
-  }) => viemClient.verifyTypedData(args as any),
-  writeContract: (args: {
-    address: `0x${string}`;
-    abi: readonly unknown[];
-    functionName: string;
-    args: readonly unknown[];
-  }) =>
-    viemClient.writeContract({
-      ...args,
-      args: args.args || [],
-    }),
-  sendTransaction: (args: { to: `0x${string}`; data: `0x${string}` }) =>
-    viemClient.sendTransaction(args),
-  waitForTransactionReceipt: (args: { hash: `0x${string}` }) =>
-    viemClient.waitForTransactionReceipt(args),
+  );
+
+  if (!v1EvmSigner) {
+    v1EvmSigner = evmSigner;
+  }
 });
 
 // ============================================================================
@@ -82,9 +138,38 @@ const bridgeService = new CircleCCTPBridgeService({
 // Scheme Setup
 // ============================================================================
 
-const evmScheme = new ExactEvmScheme(evmSigner, {
-  deployERC4337WithEIP6492: config.DEPLOY_ERC4337_WITH_EIP6492,
-});
+class ExactEvmSchemeRouter implements SchemeNetworkFacilitator {
+  readonly scheme = "exact";
+  readonly caipFamily = "eip155:*";
+
+  constructor(private schemes: Map<Network, SchemeNetworkFacilitator>) {}
+
+  getExtra(network: Network): Record<string, unknown> | undefined {
+    return this.getScheme(network).getExtra(network);
+  }
+
+  getSigners(network: Network): string[] {
+    return this.getScheme(network).getSigners(network);
+  }
+
+  verify(payload: PaymentPayload, requirements: PaymentRequirements) {
+    return this.getScheme(requirements.network as Network).verify(payload, requirements);
+  }
+
+  settle(payload: PaymentPayload, requirements: PaymentRequirements) {
+    return this.getScheme(requirements.network as Network).settle(payload, requirements);
+  }
+
+  private getScheme(network: Network): SchemeNetworkFacilitator {
+    const scheme = this.schemes.get(network);
+    if (!scheme) {
+      throw new Error(`Unsupported EVM network: ${network}`);
+    }
+    return scheme;
+  }
+}
+
+const evmScheme = new ExactEvmSchemeRouter(exactSchemesByNetwork);
 
 const schemeFacilitators = new Map<string, SchemeNetworkFacilitator>();
 schemeFacilitators.set("exact", evmScheme);
@@ -208,17 +293,19 @@ const facilitator = new x402Facilitator()
 // Register Payment Schemes
 // ============================================================================
 
-registerExactEvmScheme(facilitator, {
-  signer: evmSigner,
-  networks: [
-    "eip155:8453", // Base Mainnet
-    "eip155:84532", // Base Sepolia
-    "eip155:1", // Ethereum Mainnet
-    "eip155:11155111", // Ethereum Sepolia
-    "eip155:137", // Polygon
-  ],
-  deployERC4337WithEIP6492: process.env.DEPLOY_ERC4337_WITH_EIP6492 === "true",
-});
+facilitator.register(
+  cctpEvmChains.map((chain) => chain.network),
+  evmScheme,
+);
+
+if (v1EvmSigner) {
+  facilitator.registerV1(
+    V1_NETWORKS as any,
+    new ExactEvmSchemeV1(v1EvmSigner, {
+      deployERC4337WithEIP6492: config.DEPLOY_ERC4337_WITH_EIP6492,
+    }),
+  );
+}
 
 // Note: CrossChainRouter is NOT registered as a scheme
 // Cross-chain is extension-based, not scheme-based
@@ -331,3 +418,5 @@ app.listen(parseInt(config.PORT), () => {
   console.log(`   GET  /supported - Get supported payment kinds`);
   console.log(`   GET  /health - Health check`);
 });
+
+

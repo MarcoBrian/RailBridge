@@ -8,6 +8,18 @@ import { HTTPFacilitatorClient } from "@x402/core/http";
 import { registerExactEvmScheme } from "@x402/evm/exact/server";
 import { createPaywall } from "@x402/paywall";
 import { evmPaywall } from "@x402/paywall/evm";
+import { BridgeKit, type EVMChainDefinition } from "@circle-fin/bridge-kit";
+import {
+  createPublicClient,
+  http,
+  keccak256,
+  toHex,
+  type Address,
+} from "viem";
+import { hashStruct } from "viem/utils";
+import type { AssetAmount } from "@x402/core/types";
+
+type Caip2 = `${string}:${string}`;
 
 // Get directory of current file (for ESM modules)
 const __filename = fileURLToPath(import.meta.url);
@@ -42,41 +54,304 @@ const facilitatorClient = new HTTPFacilitatorClient({
 // This handles payment requirement building, verification, and settlement
 const resourceServer = new x402ResourceServer(facilitatorClient);
 
+const kit = new BridgeKit();
+const testnetChains = kit
+  .getSupportedChains({ chainType: "evm" })
+  .filter((chain): chain is EVMChainDefinition => chain.type === "evm")
+  .filter((chain) => chain.isTestnet);
+
+const testnetNetworks = testnetChains.map(
+  (chain) => `eip155:${chain.chainId}` as Caip2,
+);
+
 // Register EVM scheme on the server side for "exact" scheme
-// This enables the server to:
-// - Parse prices (e.g., "$0.01" -> token amount)
-// - Build payment requirements for EVM networks
-// Register for specific networks to ensure validation passes
+// This enables the server to build payment requirements for all testnets
 registerExactEvmScheme(resourceServer, {
-  networks: [
-    "eip155:84532", // Base Sepolia
-    "eip155:8453",  // Base Mainnet
-    "eip155:1",     // Ethereum Mainnet
-    "eip155:137",   // Polygon
-  ],
+  networks: testnetNetworks,
 });
+
+const TOKEN_DOMAIN_ABI = [
+  {
+    name: "name",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "string" }],
+  },
+  {
+    name: "version",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "string" }],
+  },
+] as const;
+const EIP712_DOMAIN_ABI = [
+  {
+    name: "eip712Domain",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "fields", type: "bytes1" },
+      { name: "name", type: "string" },
+      { name: "version", type: "string" },
+      { name: "chainId", type: "uint256" },
+      { name: "verifyingContract", type: "address" },
+      { name: "salt", type: "bytes32" },
+      { name: "extensions", type: "uint256[]" },
+    ],
+  },
+] as const;
+const DOMAIN_SEPARATOR_ABI = [
+  {
+    name: "DOMAIN_SEPARATOR",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "bytes32" }],
+  },
+] as const;
+const hashStructUnsafe = hashStruct as unknown as (args: {
+  data: Record<string, unknown>;
+  primaryType: string;
+  types: Record<string, { name: string; type: string }[]>;
+}) => `0x${string}`;
 
 // Define payment-protected routes for this merchant
 // Only same-chain payments are accepted (using "exact" scheme)
+const USDC_AMOUNT = "10000"; // $0.01 in atomic units (6 decimals)
+
+const accepts = (
+  await Promise.all(
+    testnetChains.map(async (chain) => {
+    if (!chain.usdcAddress) {
+      throw new Error(`Missing USDC address for ${chain.name}`);
+    }
+    const rpc = chain.rpcEndpoints?.[0];
+    let tokenName = "USDC";
+    let tokenVersion = "2";
+
+    if (rpc) {
+      const client = createPublicClient({
+        chain: {
+          id: chain.chainId,
+          name: chain.name,
+          nativeCurrency: chain.nativeCurrency,
+          rpcUrls: { default: { http: [rpc] } },
+        },
+        transport: http(rpc),
+      });
+
+      try {
+        tokenName = await client.readContract({
+          address: chain.usdcAddress as Address,
+          abi: TOKEN_DOMAIN_ABI,
+          functionName: "name",
+        });
+      } catch (error) {
+        console.warn(
+          `⚠️  Could not read USDC name for ${chain.name}; using default`,
+        );
+      }
+
+      try {
+        tokenVersion = await client.readContract({
+          address: chain.usdcAddress as Address,
+          abi: TOKEN_DOMAIN_ABI,
+          functionName: "version",
+        });
+      } catch (error) {
+        console.warn(
+          `⚠️  Could not read USDC version for ${chain.name}; using default`,
+        );
+      }
+
+      try {
+        const domain = await client.readContract({
+          address: chain.usdcAddress as Address,
+          abi: EIP712_DOMAIN_ABI,
+          functionName: "eip712Domain",
+        });
+        const fields = Number(domain[0]);
+        const domainExtra: { chainId?: number; salt?: `0x${string}` } = {};
+        const hasChainId = (fields & 0x04) !== 0;
+        const hasSalt = (fields & 0x10) !== 0;
+        if (hasChainId) {
+          domainExtra.chainId = Number(domain[3]);
+        }
+        if (hasSalt && domain[5] !== "0x0000000000000000000000000000000000000000000000000000000000000000") {
+          domainExtra.salt = domain[5] as `0x${string}`;
+        }
+        if (Object.keys(domainExtra).length > 0) {
+          return {
+            scheme: "exact" as const,
+            network: `eip155:${chain.chainId}` as Caip2,
+            price: {
+              asset: chain.usdcAddress,
+              amount: USDC_AMOUNT,
+              extra: {
+                name: tokenName,
+                version: tokenVersion,
+                domain: domainExtra,
+              },
+            } as AssetAmount,
+            payTo: MERCHANT_ADDRESS,
+          };
+        }
+      } catch (error) {
+        console.warn(
+          `⚠️  Could not read eip712Domain for ${chain.name}; using defaults`,
+        );
+      }
+
+      try {
+        const onChainDomainSeparator = await client.readContract({
+          address: chain.usdcAddress as Address,
+          abi: DOMAIN_SEPARATOR_ABI,
+          functionName: "DOMAIN_SEPARATOR",
+        });
+        if (
+          onChainDomainSeparator ===
+          "0x0000000000000000000000000000000000000000000000000000000000000000"
+        ) {
+          console.warn(
+            `⚠️  ${chain.name} USDC DOMAIN_SEPARATOR is zero; skipping same-chain payments`,
+          );
+          return null;
+        }
+        const chainIdCandidates = [
+          BigInt(chain.chainId),
+          1n,
+          0n,
+        ];
+        const saltBytes32 = toHex(chain.chainId, { size: 32 });
+        const saltedHash = keccak256(saltBytes32);
+        const saltCandidates = [saltBytes32, saltedHash as `0x${string}`];
+        const fieldCombos = [
+          { name: true, version: true, verifyingContract: true, chainId: false, salt: false },
+          { name: true, version: true, verifyingContract: true, chainId: true, salt: false },
+          { name: true, version: true, verifyingContract: true, chainId: false, salt: true },
+          { name: true, version: true, verifyingContract: true, chainId: true, salt: true },
+          { name: true, version: false, verifyingContract: true, chainId: false, salt: false },
+          { name: true, version: false, verifyingContract: true, chainId: true, salt: false },
+          { name: true, version: false, verifyingContract: true, chainId: false, salt: true },
+          { name: true, version: false, verifyingContract: true, chainId: true, salt: true },
+        ];
+
+        let matchedRequirement:
+          | {
+              scheme: "exact";
+              network: Caip2;
+              price: AssetAmount;
+              payTo: `0x${string}`;
+            }
+          | null = null;
+
+        for (const combo of fieldCombos) {
+          if (matchedRequirement) break;
+          const types = {
+            EIP712Domain: [
+              combo.name ? { name: "name", type: "string" } : null,
+              combo.version ? { name: "version", type: "string" } : null,
+              combo.chainId ? { name: "chainId", type: "uint256" } : null,
+              combo.verifyingContract
+                ? { name: "verifyingContract", type: "address" }
+                : null,
+              combo.salt ? { name: "salt", type: "bytes32" } : null,
+            ].filter(Boolean) as { name: string; type: string }[],
+          };
+
+          const chainIds = combo.chainId ? chainIdCandidates : [undefined];
+          const salts = combo.salt ? saltCandidates : [undefined];
+
+          for (const chainIdCandidate of chainIds) {
+            if (matchedRequirement) break;
+            for (const saltCandidate of salts) {
+              const separator = hashStructUnsafe({
+                data: {
+                  ...(combo.name ? { name: tokenName } : {}),
+                  ...(combo.version ? { version: tokenVersion } : {}),
+                  ...(combo.verifyingContract
+                    ? { verifyingContract: chain.usdcAddress as `0x${string}` }
+                    : {}),
+                  ...(chainIdCandidate !== undefined
+                    ? { chainId: chainIdCandidate }
+                    : {}),
+                  ...(saltCandidate !== undefined ? { salt: saltCandidate } : {}),
+                },
+                primaryType: "EIP712Domain",
+                types,
+              });
+              if (separator !== onChainDomainSeparator) {
+                continue;
+              }
+              const fields =
+                (combo.name ? 0x1 : 0) |
+                (combo.version ? 0x2 : 0) |
+                (combo.chainId ? 0x4 : 0) |
+                (combo.verifyingContract ? 0x8 : 0) |
+                (combo.salt ? 0x10 : 0);
+              const domainExtra: {
+                fields?: number;
+                chainId?: number;
+                salt?: `0x${string}`;
+              } = { fields };
+              if (combo.chainId && chainIdCandidate !== undefined) {
+                domainExtra.chainId = Number(chainIdCandidate);
+              }
+              if (combo.salt && saltCandidate !== undefined) {
+                domainExtra.salt = saltCandidate;
+              }
+              matchedRequirement = {
+                scheme: "exact",
+                network: `eip155:${chain.chainId}` as Caip2,
+                price: {
+                  asset: chain.usdcAddress,
+                  amount: USDC_AMOUNT,
+                  extra: {
+                    name: tokenName,
+                    version: tokenVersion,
+                    domain: domainExtra,
+                  },
+                } as AssetAmount,
+                payTo: MERCHANT_ADDRESS,
+              };
+              break;
+            }
+          }
+        }
+
+        if (matchedRequirement) {
+          return matchedRequirement;
+        }
+      } catch (error) {
+        console.warn(
+          `⚠️  Could not read DOMAIN_SEPARATOR for ${chain.name}; using defaults`,
+        );
+      }
+    }
+
+    return {
+      scheme: "exact" as const,
+      network: `eip155:${chain.chainId}` as Caip2,
+      price: {
+        asset: chain.usdcAddress,
+        amount: USDC_AMOUNT,
+        extra: {
+          name: tokenName,
+          version: tokenVersion,
+        },
+      } as AssetAmount,
+      payTo: MERCHANT_ADDRESS,
+    };
+  }),
+)
+).filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+
 const routes = {
   "GET /api/premium": {
-    accepts: [
-      // Same-chain EVM payment on Base Sepolia testnet
-      {
-        scheme: "exact" as const,
-        network: "eip155:84532" as const, // Base Sepolia testnet
-        price: "$0.01",
-        payTo: MERCHANT_ADDRESS, // Merchant receives directly on same chain
-      },
-      // You can add more same-chain payment options for different networks
-      // Example: Payment on Polygon
-      // {
-      //   scheme: "exact" as const,
-      //   network: "eip155:137" as const, // Polygon
-      //   price: "$0.01",
-      //   payTo: MERCHANT_ADDRESS, // Must be valid address on Polygon
-      // },
-    ],
+    accepts,
     description: "Premium API endpoint",
     mimeType: "application/json",
     // No extensions needed for same-chain payments

@@ -1,0 +1,45 @@
+# Supported Networks
+
+## Mainnet
+
+| Network | CAIP-2 Format | USDC Address |
+| --- | --- | --- |
+| Arbitrum | `eip155:42161` | `0xaf88d065e77c8cc2239327c5edb3a432268e5831` |
+| Avalanche | `eip155:43114` | `0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E` |
+| Base | `eip155:8453` | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
+| Codex Mainnet | `eip155:81224` | `0xd996633a415985DBd7D6D12f4A4343E31f5037cf` |
+| Ethereum | `eip155:1` | `0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48` |
+| HyperEVM | `eip155:999` | `0xb88339CB7199b77E23DB6E890353E22632Ba630f` |
+| Ink | `eip155:57073` | `0x2D270e6886d130D724215A266106e6832161EAEd` |
+| Linea | `eip155:59144` | `0x176211869ca2b568f2a7d4ee941e073a821ee1ff` |
+| Monad | `eip155:143` | `0x754704Bc059F8C67012fEd69BC8A327a5aafb603` |
+| Optimism | `eip155:10` | `0x0b2c639c533813f4aa9d7837caf62653d097ff85` |
+| Plume | `eip155:98866` | `0x222365EF19F7947e5484218551B56bb3965Aa7aF` |
+| Polygon | `eip155:137` | `0x3c499c542cef5e3811e1192ce70d8cc03d5c3359` |
+| Sei | `eip155:1329` | `0xe15fC38F6D8c56aF07bbCBe3BAf5708A2Bf42392` |
+| Sonic | `eip155:146` | `0x29219dd400f2Bf60E5a23d13Be72B486D4038894` |
+| Unichain | `eip155:130` | `0x078D782b760474a361dDA0AF3839290b0EF57AD6` |
+| World Chain | `eip155:480` | `0x79A02482A880bCe3F13E09da970dC34dB4cD24D1` |
+
+## Testnet
+
+| Network | CAIP-2 Format | USDC Address |
+| --- | --- | --- |
+| Arbitrum Sepolia | `eip155:421614` | `0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d` |
+| Arc Testnet | `eip155:5042002` | `0x3600000000000000000000000000000000000000` |
+| Avalanche Fuji | `eip155:43113` | `0x5425890298aed601595a70ab815c96711a31bc65` |
+| Base Sepolia | `eip155:84532` | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
+| Codex Testnet | `eip155:812242` | `0x6d7f141b6819C2c9CC2f818e6ad549E7Ca090F8f` |
+| Ethereum Sepolia | `eip155:11155111` | `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` |
+| HyperEVM Testnet | `eip155:998` | `0x2B3370eE501B4a559b57D449569354196457D8Ab` |
+| Ink Sepolia | `eip155:763373` | `0xFabab97dCE620294D2B0b0e46C68964e326300Ac` |
+| Linea Sepolia | `eip155:59141` | `0xfece4462d57bd51a6a552365a011b95f0e16d9b7` |
+| Monad Testnet | `eip155:10143` | `0x534b2f3A21130d7a60830c2Df862319e593943A3` |
+| Optimism Sepolia | `eip155:11155420` | `0x5fd84259d66Cd46123540766Be93DFE6D43130D7` |
+| Plume Testnet | `eip155:98867` | `0xcB5f30e335672893c7eb944B374c196392C19D18` |
+| Polygon Amoy | `eip155:80002` | `0x41e94eb019c0762f9bfcf9fb1e58725bfb0e7582` |
+| Sei Testnet | `eip155:1328` | `0x4fCF1784B31630811181f670Aea7A7bEF803eaED` |
+| Sonic Testnet | `eip155:14601` | `0x0BA304580ee7c9a980CF72e55f5Ed2E9fd30Bc51` |
+| Unichain Sepolia | `eip155:1301` | `0x31d0220469e10c4E71834a79b1f276d740d3768F` |
+| World Chain Sepolia | `eip155:4801` | `0x66145f38cBAC35Ca6F1Dfb4914dF98F1614aeA88` |
+
