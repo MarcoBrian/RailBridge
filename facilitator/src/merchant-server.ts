@@ -120,6 +120,7 @@ resourceServer.onSettleFailure(async (context) => {
 
 registerExactEvmScheme(resourceServer, {
   networks: [
+    "eip155:5042002", // Arc Testnet
     "eip155:84532",
     "eip155:8453",
     "eip155:1",
@@ -133,9 +134,9 @@ const routes = {
     accepts: [
       {
         scheme: "exact" as const,
-        network: "eip155:84532" as const,
+        network: "eip155:5042002" as const,
         price: {
-          asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+          asset: "0x3600000000000000000000000000000000000000",
           amount: "10000",
           extra: {
             name: "USDC",
@@ -144,7 +145,7 @@ const routes = {
         } as AssetAmount,
         payTo: FACILITATOR_ADDRESS,
         extra: {
-          description: "Cross-chain payment: Pay on Base Sepolia, receive on Ethereum Sepolia",
+          description: "Cross-chain payment: Pay on Arc Testnet, receive on Base Sepolia",
         },
       },
     ],
@@ -152,8 +153,8 @@ const routes = {
     mimeType: "application/json",
     extensions: {
       [CROSS_CHAIN]: declareCrossChainExtension({
-        destinationNetwork: "eip155:11155111",
-        destinationAsset: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+        destinationNetwork: "eip155:84532",
+        destinationAsset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
         destinationPayTo: MERCHANT_ADDRESS,
       }),
     },
@@ -291,7 +292,7 @@ function startServer() {
     console.log(`🛒 Merchant server (cross-chain only) listening at http://localhost:${PORT}`);
     console.log(`Using facilitator at: ${FACILITATOR_URL}`);
     console.log(`Merchant address: ${MERCHANT_ADDRESS}`);
-    console.log(`💡 Cross-chain: Users pay on Base Sepolia, merchant receives on Ethereum Sepolia`);
+    console.log(`💡 Cross-chain: Users pay on Arc Testnet, merchant receives on Base Sepolia`);
   });
 }
 
