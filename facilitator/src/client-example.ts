@@ -13,6 +13,12 @@
  */
 
 import dotenv from "dotenv";
+import { webcrypto } from "node:crypto";
+
+if (!globalThis.crypto) {
+  globalThis.crypto = webcrypto as any;
+}
+
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { wrapFetchWithPayment } from "@x402/fetch";
@@ -69,6 +75,7 @@ const networkSelector = (
   console.log("📋 Available payment options:");
   options.forEach((opt, i) => {
     console.log(`   ${i + 1}. ${opt.network} (${opt.scheme}) - Amount: ${opt.amount}`);
+    console.log(`      Full Option: ${JSON.stringify(opt)}`);
   });
 
   // Try each preferred network in order
@@ -139,13 +146,13 @@ async function exampleSameChainPayment() {
 
       // Get payment receipt from response headers
       const httpClient = new x402HTTPClient(client);
-      
+
       // Debug: Log all response headers
       console.log("\n📋 Response headers:");
       response.headers.forEach((value, key) => {
         console.log(`   ${key}: ${value.substring(0, 100)}${value.length > 100 ? "..." : ""}`);
       });
-      
+
       try {
         const paymentResponse = httpClient.getPaymentSettleResponse(
           (name) => response.headers.get(name),
@@ -172,7 +179,7 @@ async function exampleSameChainPayment() {
       console.log("❌❌❌ PAYMENT FAILED ❌❌❌");
       console.log("=".repeat(60));
       console.error(`\n📊 Response Status: ${response.status}`);
-      
+
       // Try to get response body first
       let errorBody: any;
       let responseText: string = "";
@@ -191,17 +198,17 @@ async function exampleSameChainPayment() {
         try {
           const getHeader = (name: string) => response.headers.get(name);
           const paymentRequired = httpClient.getPaymentRequiredResponse(getHeader, errorBody);
-          
+
           // Determine if payment was attempted or not
           const paymentError = paymentRequired.error;
           const paymentWasAttempted = !!paymentError;
-          
+
           if (paymentWasAttempted && paymentError) {
             // Payment was sent but failed verification/settlement
             console.error("\n🔴 PAYMENT VERIFICATION/SETTLEMENT FAILED");
             console.error("   The payment was sent but could not be verified or settled.");
             console.error(`\n❌ Error Code: ${paymentError}`);
-            
+
             // Provide specific error messages
             if (paymentError === "insufficient_funds") {
               console.error("\n💸 INSUFFICIENT FUNDS");
@@ -237,7 +244,7 @@ async function exampleSameChainPayment() {
               console.error(`\n⚠️  PAYMENT ERROR: ${paymentError}`);
               console.error("   The payment failed for an unknown reason.");
             }
-            
+
             // Show payment requirements for debugging
             console.error("\n📋 Payment Requirements (for debugging):");
             console.error(JSON.stringify(paymentRequired, null, 2));
@@ -267,7 +274,7 @@ async function exampleSameChainPayment() {
           console.error("   Response text:", responseText.substring(0, 500));
         }
       }
-      
+
       // Always show response headers for debugging
       console.error("\n📋 Response Headers (for debugging):");
       response.headers.forEach((value, key) => {
@@ -430,8 +437,8 @@ async function main() {
   console.log(`Client Address: ${signer.address}\n`);
 
   // Run examples
-  await exampleSameChainPayment();
-  // await exampleCrossChainPayment(); // Commented out for testing
+  // await exampleSameChainPayment();
+  await exampleCrossChainPayment();
   // await exampleManualPaymentFlow(); // Commented out for testing
 
   console.log("\n" + "=".repeat(60));

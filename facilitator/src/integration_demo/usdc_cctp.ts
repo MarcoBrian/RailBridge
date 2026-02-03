@@ -38,8 +38,8 @@ const kit = new BridgeKit();
 // };
 
 // List supported chains
-const chainDef = kit.getSupportedChains(); 
-console.log("Supported chains:", chainDef); 
+const chainDef = kit.getSupportedChains();
+console.log("All Chains:", chainDef.map(c => c.chain));
 
 // Dont run the bridge function
 // void bridgeUSDC();
