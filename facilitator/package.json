@@ -14,6 +14,7 @@
     "test:merchant-same-chain": "tsx src/merchant-server-same-chain.ts",
     "example:client": "tsx src/client-example.ts",
     "demo:cctp": "tsx src/integration_demo/usdc_cctp.ts",
+    "demo:swarm": "tsx src/simulation/orchestrator.ts",
     "test:testnets": "tsx scripts/testnet-coverage.ts",
     "diagnose:domain": "tsx scripts/diagnose-domain.ts"
   },

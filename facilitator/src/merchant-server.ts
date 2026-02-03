@@ -48,7 +48,7 @@ class LoggingFacilitatorClient extends HTTPFacilitatorClient {
       scheme: paymentRequirements.scheme,
       network: paymentRequirements.network,
     });
-    
+
     try {
       const result = await super.settle(paymentPayload, paymentRequirements);
       console.log("✅ [MERCHANT] Facilitator.settle() succeeded:", {
@@ -72,7 +72,7 @@ class LoggingFacilitatorClient extends HTTPFacilitatorClient {
       scheme: paymentRequirements.scheme,
       network: paymentRequirements.network,
     });
-    
+
     try {
       const result = await super.verify(paymentPayload, paymentRequirements);
       console.log("✅ [MERCHANT] Facilitator.verify() succeeded:", {
@@ -134,9 +134,9 @@ const routes = {
     accepts: [
       {
         scheme: "exact" as const,
-        network: "eip155:5042002" as const,
+        network: "eip155:84532" as const,
         price: {
-          asset: "0x3600000000000000000000000000000000000000",
+          asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
           amount: "10000",
           extra: {
             name: "USDC",
@@ -145,7 +145,7 @@ const routes = {
         } as AssetAmount,
         payTo: FACILITATOR_ADDRESS,
         extra: {
-          description: "Cross-chain payment: Pay on Arc Testnet, receive on Base Sepolia",
+          description: "Cross-chain payment: Pay on Base Sepolia, receive on Arc Testnet",
         },
       },
     ],
@@ -153,8 +153,8 @@ const routes = {
     mimeType: "application/json",
     extensions: {
       [CROSS_CHAIN]: declareCrossChainExtension({
-        destinationNetwork: "eip155:84532",
-        destinationAsset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        destinationNetwork: "eip155:5042002",
+        destinationAsset: "0x3600000000000000000000000000000000000000",
         destinationPayTo: MERCHANT_ADDRESS,
       }),
     },
@@ -169,18 +169,18 @@ app.use((req, res, next) => {
   console.log(`[${timestamp}] ${req.method} ${req.path}`);
   console.log(`   IP: ${req.ip || req.socket.remoteAddress}`);
   console.log(`   User-Agent: ${req.get("user-agent") || "unknown"}`);
-  
+
   const paymentHeader = req.get("payment-signature") || req.get("x-payment");
   if (paymentHeader) {
     console.log(`   Payment: ${paymentHeader.substring(0, 50)}...`);
   }
-  
+
   const startTime = Date.now();
   res.on("finish", () => {
     const duration = Date.now() - startTime;
     console.log(`[${timestamp}] ${req.method} ${req.path} - ${res.statusCode} (${duration}ms)`);
   });
-  
+
   next();
 });
 
@@ -196,40 +196,40 @@ function startServer() {
   console.log("🔍 Route keys:", Object.keys(routes));
 
   try {
-  // Create payment middleware
-  const baseMiddleware = paymentMiddleware(
-    routes,
-    resourceServer,
-    undefined,
-    paywall, //Optional to include paywall 
-    true,
-  );
+    // Create payment middleware
+    const baseMiddleware = paymentMiddleware(
+      routes,
+      resourceServer,
+      undefined,
+      paywall, //Optional to include paywall 
+      true,
+    );
 
-  // Wrap the middleware to add logging and ensure it's called
-  app.use((req, res, next) => {
-    console.log(`\n🔍 [MIDDLEWARE WRAPPER] Request: ${req.method} ${req.path}`);
-    console.log(`   Payment header: ${req.get("payment-signature") || req.get("x-payment") || "NONE"}`);
-    console.log(`   URL: ${req.url}`);
-    console.log(`   Original URL: ${req.originalUrl}`);
-    
-    // Call the actual payment middleware
-    const middlewareResult = baseMiddleware(req, res, (err?: any) => {
-      if (err) {
-        console.error(`❌ [MIDDLEWARE WRAPPER] Error from payment middleware:`, err);
-      } else {
-        console.log(`✅ [MIDDLEWARE WRAPPER] Payment middleware completed, calling next()`);
-      }
-      next(err);
-    });
-    
-    // Handle promise if middleware returns one
-    if (middlewareResult && typeof middlewareResult.then === 'function') {
-      middlewareResult.catch((err: any) => {
-        console.error(`❌ [MIDDLEWARE WRAPPER] Promise rejection from payment middleware:`, err);
+    // Wrap the middleware to add logging and ensure it's called
+    app.use((req, res, next) => {
+      console.log(`\n🔍 [MIDDLEWARE WRAPPER] Request: ${req.method} ${req.path}`);
+      console.log(`   Payment header: ${req.get("payment-signature") || req.get("x-payment") || "NONE"}`);
+      console.log(`   URL: ${req.url}`);
+      console.log(`   Original URL: ${req.originalUrl}`);
+
+      // Call the actual payment middleware
+      const middlewareResult = baseMiddleware(req, res, (err?: any) => {
+        if (err) {
+          console.error(`❌ [MIDDLEWARE WRAPPER] Error from payment middleware:`, err);
+        } else {
+          console.log(`✅ [MIDDLEWARE WRAPPER] Payment middleware completed, calling next()`);
+        }
         next(err);
       });
-    }
-  });
+
+      // Handle promise if middleware returns one
+      if (middlewareResult && typeof middlewareResult.then === 'function') {
+        middlewareResult.catch((err: any) => {
+          console.error(`❌ [MIDDLEWARE WRAPPER] Promise rejection from payment middleware:`, err);
+          next(err);
+        });
+      }
+    });
     console.log("✅ Payment middleware registered successfully");
   } catch (error) {
     console.error("❌ Failed to register payment middleware:", error);
@@ -238,37 +238,37 @@ function startServer() {
 
   // Register route handler AFTER middleware (important for Express middleware order)
   app.get("/api/premium", (req, res) => {
-  console.log(`\n🔍 ===== REQUEST DEBUG =====`);
-  console.log(`Path: ${req.path}`);
-  console.log(`Method: ${req.method}`);
-  console.log(`Status Code: ${res.statusCode}`);
-  
-  // Check if payment header was sent
-  const paymentHeader = req.get("payment-signature") || req.get("x-payment");
-  if (paymentHeader) {
-    console.log(`📝 Payment header present: ${String(paymentHeader).substring(0, 50)}...`);
-  } else {
-    console.warn(`⚠️  No payment header found - request may have bypassed payment middleware`);
-    console.warn(`⚠️  This means payment verification/settlement was NOT performed!`);
-  }
-  
-  console.log(`✅ Premium content accessed - Payment verified and settled`);
-  
-  // Check if PAYMENT-RESPONSE header is set (should be set by middleware after settlement)
-  const paymentResponseHeader = res.getHeader("PAYMENT-RESPONSE") || res.getHeader("payment-response");
-  if (paymentResponseHeader) {
-    console.log(`💰 PAYMENT-RESPONSE header found: ${String(paymentResponseHeader).substring(0, 100)}...`);
-  } else {
-    console.warn(`⚠️  PAYMENT-RESPONSE header NOT found - settlement headers may not be set`);
-  }
+    console.log(`\n🔍 ===== REQUEST DEBUG =====`);
+    console.log(`Path: ${req.path}`);
+    console.log(`Method: ${req.method}`);
+    console.log(`Status Code: ${res.statusCode}`);
 
-  res.json({
-    message: "You successfully paid for this premium content.",
-    data: {
-      timestamp: Date.now(),
-      value: "premium-data",
-    },
-  });
+    // Check if payment header was sent
+    const paymentHeader = req.get("payment-signature") || req.get("x-payment");
+    if (paymentHeader) {
+      console.log(`📝 Payment header present: ${String(paymentHeader).substring(0, 50)}...`);
+    } else {
+      console.warn(`⚠️  No payment header found - request may have bypassed payment middleware`);
+      console.warn(`⚠️  This means payment verification/settlement was NOT performed!`);
+    }
+
+    console.log(`✅ Premium content accessed - Payment verified and settled`);
+
+    // Check if PAYMENT-RESPONSE header is set (should be set by middleware after settlement)
+    const paymentResponseHeader = res.getHeader("PAYMENT-RESPONSE") || res.getHeader("payment-response");
+    if (paymentResponseHeader) {
+      console.log(`💰 PAYMENT-RESPONSE header found: ${String(paymentResponseHeader).substring(0, 100)}...`);
+    } else {
+      console.warn(`⚠️  PAYMENT-RESPONSE header NOT found - settlement headers may not be set`);
+    }
+
+    res.json({
+      message: "You successfully paid for this premium content.",
+      data: {
+        timestamp: Date.now(),
+        value: "premium-data",
+      },
+    });
   });
 
   // Error handler
@@ -277,7 +277,7 @@ function startServer() {
     console.error(`[${timestamp}] ❌ Error handling request ${req.method} ${req.path}:`);
     console.error(`   Error: ${err.message}`);
     console.error(`   Stack: ${err.stack}`);
-    
+
     if (!res.headersSent) {
       res.status(500).json({
         error: "Internal server error",
