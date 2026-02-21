@@ -38,6 +38,24 @@ A dashboard alone is easy to copy. A differentiated product is:
 3. **Defensibility:** Historical payment data + policy engine + reliability ops become sticky over time.
 4. **Expansion-ready:** Once treasury exists, you can add payouts, risk controls, financing, and accounting integrations.
 
+### Feasibility answer (direct)
+
+Yes, this MVP is feasible with the current RailBridge base if we ship in constrained phases:
+
+1. Keep custody model simple first (custodial wallets per merchant account).
+2. Keep policy model simple first (preferred chain/asset + manual consolidation).
+3. Keep auth Web2-native first (email/password + OAuth), then add wallet login later if needed.
+
+This sequencing minimizes product friction for Web2 merchants while preserving a migration path toward hybrid/non-custodial accounts.
+
+### Alignment (product + execution)
+
+Yes — this direction is aligned **if we explicitly commit to one primary MVP promise**:
+
+> "Merchants see one treasury account across chains, can trust balances, and can move funds to a preferred chain without learning Web3 operations."
+
+This keeps the product strategically focused on a painful operational problem (revenue ops + treasury clarity), not on generalized crypto wallet tooling.
+
 ### Key strategic risk
 
 If you only add analytics UI without changing settlement/control primitives, you may become a "pretty bridge explorer" instead of a treasury product.
@@ -108,6 +126,12 @@ Dashboard should not only show analytics; it should expose controls:
 - Policy configuration (preferred chain/asset, rebalance schedule, payout rules).
 - Webhook + audit log explorer for finance/compliance teams.
 
+### UX principle for Web2 merchants
+
+- Merchants should never need to pick RPC endpoints, manage gas, or sign routine treasury actions.
+- Dashboard language should be finance-native: `available balance`, `pending`, `consolidating`, `payout ready`.
+- Chain details remain visible for auditability, but hidden behind expandable detail by default.
+
 ---
 
 ## 5) Refactor Plan (Technical)
@@ -158,11 +182,12 @@ Then policy engine can choose route by cost, SLA, and risk.
 
 Add merchant-facing endpoints before full UI polish:
 
-- `GET /merchant/:id/balances`
-- `GET /merchant/:id/earnings?from=&to=`
-- `GET /merchant/:id/settlements`
-- `POST /merchant/:id/policies`
-- `POST /merchant/:id/payouts`
+- `GET /v1/merchant/{merchantId}/accounts/{accountId}/balances`
+- `GET /v1/merchant/{merchantId}/accounts/{accountId}/earnings?from=&to=`
+- `GET /v1/merchant/{merchantId}/accounts/{accountId}/settlements`
+- `PUT /v1/merchant/{merchantId}/accounts/{accountId}/policy`
+- `POST /v1/merchant/{merchantId}/accounts/{accountId}/consolidations`
+- `POST /v1/merchant/{merchantId}/accounts/{accountId}/payouts`
 
 This keeps platform API-first while building internal or external dashboards.
 
@@ -182,6 +207,20 @@ Core tables/collections:
 - `gas_accounts`
 - `fee_events`
 - `webhook_deliveries`
+
+Additional MVP entities to answer auth/custody needs:
+
+- `merchant_users` (identity)
+- `merchant_accounts` (treasury account abstraction)
+- `merchant_account_wallets` (per-chain custodial addresses)
+- `wallet_balances` (indexed onchain balances)
+- `consolidation_requests` (merchant-triggered balance consolidation)
+
+### Recommended MVP defaults
+
+- **Auth:** email/password + Google/Microsoft OAuth.
+- **Custody:** custodial, key references held in secure signer provider (MPC/HSM), no raw private keys in app DB.
+- **Balance truth:** ledger-derived available balance + periodic onchain balance sync for reconciliation.
 
 Use immutable event history + derived balance views.
 
@@ -218,6 +257,8 @@ Goal by day 90: merchants can receive cross-chain payments and operate with "sin
 ## 9) Practical Recommendation
 
 Proceed with the treasury pivot, but treat the dashboard as the **last mile**.
+
+Strategic verdict: **Go** — the wedge is strong, monetizable, and defensible if ledger correctness + custody operations are prioritized over UI breadth.
 
 The real product moat should be:
 

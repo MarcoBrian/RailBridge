@@ -14,8 +14,21 @@ This spec defines how to evolve RailBridge from a cross-chain x402 facilitator i
 - Policy-driven settlement and rebalancing
 - Gas abstraction for multi-chain operations
 - Merchant-facing APIs and dashboard data
+- Web2-friendly merchant onboarding, auth, and custody controls
 
 This document is implementation-oriented and designed for engineering planning and sprint execution.
+
+---
+
+## 1.1 Alignment statement (MVP scope lock)
+
+We are aligned on an MVP that does **three things first**:
+
+1. Gives merchants a Web2-simple dashboard for earnings, balances by chain, and transaction history.
+2. Abstracts chain fragmentation by presenting one treasury account view with per-chain balance drill-down.
+3. Supports manual consolidation into a preferred destination chain, with policy automation added incrementally.
+
+Out of scope for MVP v1: advanced non-custodial wallet orchestration, complex strategy automation, and multi-account hierarchy management.
 
 ---
 
@@ -57,6 +70,10 @@ Today RailBridge has:
    - `bridge_confirmed`
    - `failed`
 5. Merchant can list settlement history and failure reasons.
+6. Merchant can view account balance by chain, token, and consolidated USD value for one treasury account.
+7. Merchant can manually trigger consolidation from source chains into a destination chain.
+8. Merchant user authentication supports standard Web2 workflows (email/password + OAuth SSO).
+9. Treasury account model clearly separates custodial assets (RailBridge-managed wallets) from future non-custodial mode.
 
 ## 3.2 Non-functional requirements
 
@@ -65,6 +82,7 @@ Today RailBridge has:
 - Event-to-balance update latency under 5s P95 (MVP target)
 - Reconciliation drift under 0.1% on sampled checks
 - Auditability: all balance changes traceable to event IDs and tx hashes
+- Strong tenancy isolation: merchant users can only access treasury accounts for their organization
 
 ---
 
@@ -83,15 +101,20 @@ Today RailBridge has:
    - Maintains materialized balances
 4. **Merchant API Service**
    - Exposes balances, settlements, policies, payouts
+5. **Wallet Custody Service (MVP custodial)**
+   - Creates and stores merchant vault wallets by supported chain
+   - Signs operational transactions through HSM/MPC-backed key management
+   - Exposes internal APIs for balance sync and consolidation execution
 
 ## 4.2 Data flow
 
 1. Client payment verified/settled by orchestrator.
 2. Orchestrator emits `payment.verified` and `payment.settled_source`.
-3. If cross-chain required, orchestrator enqueues bridge command.
+3. If policy requires consolidation or destination routing, orchestrator enqueues bridge command.
 4. Bridge service emits `bridge.submitted` and `bridge.confirmed`.
 5. Ledger service consumes all events, writes journal entries, updates balances.
 6. Merchant API reads derived views (`merchant_balances`, `merchant_settlements`).
+7. Wallet custody service indexes per-chain wallet balances and emits `wallet.balance_synced` events.
 
 ## 4.3 Event transport
 
@@ -115,6 +138,11 @@ Recommended: Postgres outbox + queue worker (MVP), then optional Kafka/NATS at s
 - `balance_snapshot`
 - `treasury_policy`
 - `gas_account`
+- `merchant_user`
+- `merchant_account`
+- `merchant_account_wallet`
+- `wallet_balance`
+- `consolidation_request`
 
 ## 5.2 Suggested SQL schema (minimal)
 
@@ -122,13 +150,50 @@ Recommended: Postgres outbox + queue worker (MVP), then optional Kafka/NATS at s
 create table merchants (
   id uuid primary key,
   name text not null,
+  legal_entity_name text,
+  default_currency text not null default 'USD',
   status text not null default 'active',
   created_at timestamptz not null default now()
+);
+
+create table merchant_users (
+  id uuid primary key,
+  merchant_id uuid not null references merchants(id),
+  email text not null,
+  password_hash text,
+  oauth_provider text,
+  oauth_subject text,
+  role text not null default 'admin',
+  status text not null default 'active',
+  created_at timestamptz not null default now(),
+  unique(merchant_id, email)
+);
+
+create table merchant_accounts (
+  id uuid primary key,
+  merchant_id uuid not null references merchants(id),
+  account_name text not null default 'Primary Treasury',
+  custody_mode text not null default 'custodial', -- custodial | external (future)
+  status text not null default 'active',
+  created_at timestamptz not null default now()
+);
+
+create table merchant_account_wallets (
+  id uuid primary key,
+  merchant_account_id uuid not null references merchant_accounts(id),
+  network text not null,
+  address text not null,
+  wallet_provider text not null, -- fireblocks/dfns/custom
+  key_reference text not null,
+  status text not null default 'active',
+  created_at timestamptz not null default now(),
+  unique(merchant_account_id, network)
 );
 
 create table payment_intents (
   id uuid primary key,
   merchant_id uuid not null references merchants(id),
+  merchant_account_id uuid not null references merchant_accounts(id),
   external_reference text,
   payer_address text,
   source_network text not null,
@@ -141,6 +206,7 @@ create table payment_intents (
 create table settlements (
   id uuid primary key,
   payment_intent_id uuid not null references payment_intents(id),
+  merchant_account_id uuid not null references merchant_accounts(id),
   source_tx_hash text not null,
   source_network text not null,
   destination_network text,
@@ -165,6 +231,33 @@ create table bridge_transfers (
   updated_at timestamptz not null default now()
 );
 
+create table wallet_balances (
+  id uuid primary key,
+  merchant_account_id uuid not null references merchant_accounts(id),
+  network text not null,
+  asset text not null,
+  amount_numeric numeric(38, 0) not null,
+  amount_usd numeric(38, 8),
+  as_of_block bigint,
+  as_of timestamptz not null default now(),
+  unique(merchant_account_id, network, asset)
+);
+
+create table consolidation_requests (
+  id uuid primary key,
+  merchant_account_id uuid not null references merchant_accounts(id),
+  source_network text not null,
+  destination_network text not null,
+  asset text not null,
+  amount_numeric numeric(38, 0) not null,
+  status text not null, -- requested|submitted|confirmed|failed
+  bridge_transfer_id uuid references bridge_transfers(id),
+  requested_by_user_id uuid not null references merchant_users(id),
+  fail_reason text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table ledger_entries (
   id uuid primary key,
   merchant_id uuid not null references merchants(id),
@@ -181,15 +274,30 @@ create table ledger_entries (
 );
 
 create table treasury_policies (
-  merchant_id uuid primary key references merchants(id),
+  merchant_account_id uuid primary key references merchant_accounts(id),
   preferred_network text not null,
   preferred_asset text not null,
   auto_bridge_enabled boolean not null default true,
+  auto_consolidation_enabled boolean not null default false,
   payout_threshold numeric(38, 0),
   rebalance_strategy jsonb not null default '{}'::jsonb,
   updated_at timestamptz not null default now()
 );
 ```
+
+## 5.3 Custody and account model (MVP decision)
+
+- MVP is **custodial by default** to keep UX Web2-simple and allow deterministic balance tracking.
+- Each merchant gets one `merchant_account` and one operational wallet per supported chain.
+- Private keys are never stored directly in app DB; only `key_reference` to secure signer (MPC/HSM vendor).
+- Future non-custodial mode is modeled via `merchant_accounts.custody_mode = external`.
+
+## 5.4 Auth model (Web2-friendly)
+
+- Merchant users authenticate with email/password or OAuth (Google/Microsoft).
+- Access tokens are session/JWT based and map user -> merchant -> account scope.
+- API authz enforced by role (`admin`, `finance`, `readonly`) and account ownership.
+- Optional 2FA required for sensitive operations (policy update, consolidation, payout).
 
 ---
 
@@ -197,15 +305,23 @@ create table treasury_policies (
 
 Base path: `/v1/merchant`
 
+Auth model: bearer token (JWT/session) with merchant/account scoped claims.
+
+Authorization checks are mandatory on every account-scoped endpoint:
+- `merchantId` in path must match token merchant scope
+- `accountId` in path must be one of token-authorized accounts
+- write actions (`policy`, `consolidations`, `payouts`) require role `admin` or `finance`
+
 ## 6.1 Balances
 
-`GET /v1/merchant/{merchantId}/balances`
+`GET /v1/merchant/{merchantId}/accounts/{accountId}/balances`
 
 Response:
 
 ```json
 {
   "merchantId": "uuid",
+  "accountId": "uuid",
   "asOf": "2026-01-01T00:00:00Z",
   "unifiedUsd": "10234.12",
   "balances": [
@@ -222,14 +338,14 @@ Response:
 
 ## 6.2 Settlements list
 
-`GET /v1/merchant/{merchantId}/settlements?status=&from=&to=&cursor=`
+`GET /v1/merchant/{merchantId}/accounts/{accountId}/settlements?status=&from=&to=&cursor=`
 
 Returns paginated settlement lifecycle including bridge status and failure reason.
 
 ## 6.3 Policy read/update
 
-- `GET /v1/merchant/{merchantId}/policy`
-- `PUT /v1/merchant/{merchantId}/policy`
+- `GET /v1/merchant/{merchantId}/accounts/{accountId}/policy`
+- `PUT /v1/merchant/{merchantId}/accounts/{accountId}/policy`
 
 `PUT` request:
 
@@ -244,7 +360,7 @@ Returns paginated settlement lifecycle including bridge status and failure reaso
 
 ## 6.4 Payout trigger (MVP manual)
 
-`POST /v1/merchant/{merchantId}/payouts`
+`POST /v1/merchant/{merchantId}/accounts/{accountId}/payouts`
 
 ```json
 {
@@ -254,6 +370,37 @@ Returns paginated settlement lifecycle including bridge status and failure reaso
   "amount": "1000000"
 }
 ```
+
+## 6.5 Consolidation trigger (MVP manual)
+
+`POST /v1/merchant/{merchantId}/accounts/{accountId}/consolidations`
+
+```json
+{
+  "sourceNetwork": "eip155:10",
+  "destinationNetwork": "eip155:8453",
+  "asset": "USDC",
+  "amount": "250000000"
+}
+```
+
+## 6.6 Auth endpoints (merchant dashboard)
+
+- `POST /v1/auth/login`
+- `POST /v1/auth/oauth/callback`
+- `POST /v1/auth/logout`
+- `POST /v1/auth/mfa/verify`
+
+---
+
+## 6.7 Consolidation lifecycle (MVP state machine)
+
+`requested -> submitted -> confirmed | failed`
+
+Rules:
+- only `admin` or `finance` can create a consolidation request
+- request amount cannot exceed account `available` balance on source chain/asset
+- failed consolidations preserve immutable settlement and ledger history; retries create new requests
 
 ---
 
@@ -281,6 +428,10 @@ All events share envelope:
 - `bridge.confirmed`
 - `bridge.failed`
 - `fee.recorded`
+- `wallet.balance_synced`
+- `consolidation.requested`
+- `consolidation.confirmed`
+- `consolidation.failed`
 - `payout.requested`
 - `payout.completed`
 

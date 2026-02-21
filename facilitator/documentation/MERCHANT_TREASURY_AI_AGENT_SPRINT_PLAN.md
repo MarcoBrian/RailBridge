@@ -84,6 +84,29 @@ Reliable event emission from verify/settle lifecycle with idempotent consumption
 
 ---
 
+## Sprint 0.5 — Merchant Identity + Custody Foundation
+
+### Outcome
+Web2 auth and custodial account primitives exist before exposing treasury controls.
+
+### Agent tasks
+- Planner: finalize auth scope matrix (`admin`, `finance`, `readonly`) and account-tenancy rules.
+- Builder: implement merchant user/auth tables and account wallet registry migrations.
+- Builder: add secure signer adapter interface using key references (no private keys in DB).
+- Verifier: test cross-merchant isolation and role-based authorization failures.
+- Reviewer: validate MFA requirements for policy/consolidation/payout writes.
+
+### Deliverables
+- merchant user/account/wallet migrations
+- auth middleware with merchant/account scoped claims
+- signer provider interface contract
+
+### Exit criteria
+- unauthorized cross-merchant and cross-account access is blocked
+- write actions require correct role and pass audit logging requirements
+
+---
+
 ## Sprint 2 — Ledger MVP (Treasury Truth)
 
 ### Outcome
@@ -143,10 +166,11 @@ Merchant can access balances, settlements, and policy through stable APIs.
 - Reviewer: enforce auth scope checks and PII-safe logging.
 
 ### Deliverables
-- `/v1/merchant/{id}/balances`
-- `/v1/merchant/{id}/settlements`
-- `/v1/merchant/{id}/policy`
-- `/v1/merchant/{id}/payouts` (manual trigger)
+- `/v1/merchant/{merchantId}/accounts/{accountId}/balances`
+- `/v1/merchant/{merchantId}/accounts/{accountId}/settlements`
+- `/v1/merchant/{merchantId}/accounts/{accountId}/policy`
+- `/v1/merchant/{merchantId}/accounts/{accountId}/consolidations` (manual trigger)
+- `/v1/merchant/{merchantId}/accounts/{accountId}/payouts` (manual trigger)
 
 ### Exit criteria
 - APIs return lifecycle + failure reasons consistently.
@@ -243,13 +267,13 @@ AI agents can propose; humans approve critical financial-risk decisions.
 
 1. `AI-TREASURY-001`: Event envelope types + schema validation
 2. `AI-TREASURY-002`: Outbox migration + repository
-3. `AI-TREASURY-003`: Emit `payment.verified` / `payment.settled_source`
-4. `AI-TREASURY-004`: Outbox relay worker + retries
-5. `AI-TREASURY-005`: Ledger tables + invariant checker
-6. `AI-TREASURY-006`: Balance projector + replay command
-7. `AI-TREASURY-007`: Policy table + CRUD API
-8. `AI-TREASURY-008`: Policy decision integration after settle
-9. `AI-TREASURY-009`: Merchant balances + settlements APIs
-10. `AI-TREASURY-010`: Gas monitor + alert hooks
+3. `AI-TREASURY-003`: Merchant users/accounts/wallets migrations
+4. `AI-TREASURY-004`: Auth middleware + role scope enforcement
+5. `AI-TREASURY-005`: Emit `payment.verified` / `payment.settled_source`
+6. `AI-TREASURY-006`: Outbox relay worker + retries
+7. `AI-TREASURY-007`: Ledger tables + invariant checker
+8. `AI-TREASURY-008`: Balance projector + replay command
+9. `AI-TREASURY-009`: Account-scoped balances/settlements/policy APIs
+10. `AI-TREASURY-010`: Consolidation trigger API + gas monitor hooks
 
 This sequence maps directly to the original technical spec while optimizing execution for AI-agent delivery.
